@@ -6,6 +6,7 @@ __pycache__/
 .pytest_cache/
 node_modules/
 dist/
+apps/web/vite.config.localtest.ts
 data/*.exr
 data/*.png
 .DS_Store
