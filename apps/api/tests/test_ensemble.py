@@ -53,6 +53,43 @@ def test_mesh_to_bundle_sign_convention():
     assert float(bundle.sdf_volume[0, 0, 0]) > 0.0
 
 
+def test_client_rollout_and_return_depth_guards():
+    client = WorldLabsAtlasClient(mock_mode=True)
+    cam = {"intrinsics": {"fx": 200, "fy": 200, "cx": 160, "cy": 90, "width": 320, "height": 180},
+           "extrinsics": {"position": [0, 0, 0], "quaternion": [0, 0, 0, 1], "coordinateSystem": "rub"}}
+    depth = np.full((180, 320), 200, np.uint8)
+    # returnDepth with a single target is rejected client-side (Atlas 422).
+    try:
+        asyncio.run(client.run_atlas_chisel(
+            context_camera=cam, log_depth_png=depth, z_min=0.5, z_max=40.0,
+            target_cameras=[cam], prompt="x", return_depth=True))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError")
+    # 33 targets exceed the rollout/task cap.
+    try:
+        asyncio.run(client.run_atlas_chisel(
+            context_camera=cam, log_depth_png=depth, z_min=0.5, z_max=40.0,
+            target_cameras=[cam] * 33, prompt="x"))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError")
+
+
+    # Rollout budget: 1 context (3 views) + 130 sources + 2 targets = 135 > 128.
+    many_src = [{"imageAsset": {"assetId": "x"}, "camera": cam} for _ in range(130)]
+    try:
+        asyncio.run(client.run_atlas_chisel(
+            context_camera=cam, log_depth_png=depth, z_min=0.5, z_max=40.0,
+            target_cameras=[cam] * 2, prompt="x", source_frames=many_src))
+    except Exception as exc:
+        assert "Rollout" in str(exc) or "rollout" in str(exc).lower()
+    else:
+        raise AssertionError("expected rollout AtlasError")
+
+
 def test_mock_determinism_and_prompt_hash():
     client = WorldLabsAtlasClient(mock_mode=True)
     kw = dict(context_camera={"intrinsics": {"fx": 200, "fy": 200, "cx": 160, "cy": 90, "width": 320, "height": 180},

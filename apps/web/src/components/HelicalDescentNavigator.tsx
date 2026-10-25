@@ -347,7 +347,7 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
             className="px-2.5 py-1.5 rounded border border-[#34D399] bg-[#34D399]/15 text-[#34D399] font-mono text-[11px] hover:bg-[#34D399]/25 transition">Jump to NBV (#19){flyTo ? " · flying…" : ""}</button>
         </div>
       </div>
-      <div className="w-full lg:w-96 bg-[#0D0F17] border-l border-slate-800 p-5 flex flex-col gap-6">
+      <div className="w-full lg:w-96 bg-[#0D0F17] border-l border-slate-800 p-5 flex flex-col gap-6 lg:max-h-[calc(100vh-160px)] lg:overflow-y-auto">
         <div>
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
             <Video className="w-4 h-4 text-[#00F0FF]" /><span>Viewport Camera Mode</span></div>

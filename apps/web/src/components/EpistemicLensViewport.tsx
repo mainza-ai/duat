@@ -7,7 +7,8 @@ import React, { useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { Canvas, useFrame, useThree, ThreeEvent } from "@react-three/fiber";
 import { Layers, Eye, Sparkles, Radar, Sliders, Crosshair, ShieldAlert } from "lucide-react";
-import { postEnsemble } from "../lib/api";
+import { postEnsemble, createJob, getJob, cancelJob, listJobs, fetchPricing, estimateCost, exportComparisonCard } from "../lib/api";
+import type { EnsembleRequest, EnsembleResponse, JobRecord, PricingInfo } from "../lib/api";
 
 const VERTEX_SHADER = /*glsl*/ `
 varying vec2 vUv;
@@ -158,10 +159,13 @@ function useProceduralKhafreTextures(hypothesis: Hypothesis) {
 
 export type PixelTelemetry = { u: number; v: number; planarZ: number; reflectivity: number; disagreement: number };
 
+export type LayerUris = { rgb: string; depth: string; refl: string; dis: string };
+export type RunMode = "mock" | "live-probe" | "live";
+
 interface EpistemicQuadProps {
   measuredWeight: number; inferredWeight: number; imaginedWeight: number;
   shimmerIntensity: number; loupeMode: number; hypothesis: Hypothesis;
-  apiBaseUrl: string; useLive: boolean; voxelSize: number; sensorNoise: number;
+  layers: LayerUris | null;
   onInspectPixel: (t: PixelTelemetry) => void;
   onPinPixel: (t: PixelTelemetry) => void;
 }
@@ -179,30 +183,22 @@ const ZoomFit: React.FC = () => {
   return null;
 };
 
-const EpistemicShaderQuad: React.FC<EpistemicQuadProps> = (props) => {  const { measuredWeight, inferredWeight, imaginedWeight, shimmerIntensity, loupeMode, hypothesis, onInspectPixel, onPinPixel, voxelSize, sensorNoise } = props;
+const EpistemicShaderQuad: React.FC<EpistemicQuadProps> = (props) => {  const { measuredWeight, inferredWeight, imaginedWeight, shimmerIntensity, loupeMode, hypothesis, onInspectPixel, onPinPixel, layers } = props;
   const matRef = useRef<THREE.ShaderMaterial>(null);
   const lastTelemetry = useRef<PixelTelemetry>({ u: 640, v: 360, planarZ: 14.2, reflectivity: 0.72, disagreement: 0.34 });
   const fallback = useProceduralKhafreTextures(hypothesis);
   const [live, setLive] = useState<{ rgb: THREE.Texture; depth: THREE.Texture; refl: THREE.Texture; dis: THREE.Texture } | null>(null);
 
-  // Fetch live ensemble layers when toggled (debounced by hypothesis change)
+  // Backend layers arrive as data-URI PNGs (mock or live job output); otherwise procedural fallback.
   React.useEffect(() => {
-    if (!props.useLive) { setLive(null); return; }
+    if (!layers) { setLive(null); return; }
     let cancelled = false;
     const loader = new THREE.TextureLoader();
     loader.setCrossOrigin("anonymous");
-    postEnsemble(props.apiBaseUrl, {
-      camera: { pose: { position: [-38.5, -20.0, -45.0], quaternion: [0, 0, 0, 1] } },
-      hypothesis, instrument_rig: "drop_flare", seeds: [7, 42], mock_mode: true,
-      voxel_size: voxelSize, sensor_noise_sigma_m: sensorNoise,
-    }).then((res) => {
-      if (cancelled) return;
-      const tx = (uri: string) => loader.load(uri);
-      setLive({ rgb: tx(res.layers.imagined_consensus_rgb_b64), depth: tx(res.layers.measured_log_depth_b64),
-        refl: tx(res.layers.inferred_reflectivity_b64), dis: tx(res.layers.disagreement_map_b64) });
-    }).catch(() => setLive(null));
+    const tx = (uri: string) => loader.load(uri);
+    setLive({ rgb: tx(layers.rgb), depth: tx(layers.depth), refl: tx(layers.refl), dis: tx(layers.dis) });
     return () => { cancelled = true; };
-  }, [props.useLive, props.apiBaseUrl, hypothesis, voxelSize, sensorNoise]);
+  }, [layers]);
 
   const tex = live ?? { rgb: fallback.rgbTex, depth: fallback.depthTex, refl: fallback.reflTex, dis: fallback.disTex };
   const uniforms = useMemo(() => ({
@@ -256,29 +252,109 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
   const [shimmerIntensity, setShimmerIntensity] = useState(0.65);
   const [loupeMode, setLoupeMode] = useState(1);
   const [hypothesis, setHypothesis] = useState<Hypothesis>("megalithic");
-  const [useLive, setUseLive] = useState(false);
   const [voxelSize, setVoxelSize] = useState(0.25);
   const [sensorNoise, setSensorNoise] = useState(0.18);
+  const [mode, setMode] = useState<RunMode | "live-probe" | "live">("mock");
+  const [armingLive, setArmingLive] = useState<null | RunMode>(null);
+  const [layers, setLayers] = useState<LayerUris | null>(null);
+  const [layersBusy, setLayersBusy] = useState(false);
+  const [activeJob, setActiveJob] = useState<{ id: string; progress: number } | null>(null);
+  const [pricing, setPricing] = useState<PricingInfo | null>(null);
+  const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [telemetry, setTelemetry] = useState<PixelTelemetry>({ u: 640, v: 360, planarZ: 14.2, reflectivity: 0.72, disagreement: 0.34 });
   const [pinned, setPinned] = useState<PixelTelemetry | null>(null);
   const [compare, setCompare] = useState<{ status: "idle" | "loading" | "error" | "done"; thumbs: { h: Hypothesis; uri: string }[] }>({ status: "idle", thumbs: [] });
+  const [exporting, setExporting] = useState(false);
+
+  React.useEffect(() => {
+    fetchPricing(apiBaseUrl).then(setPricing).catch(() => setPricing(null));
+    listJobs(apiBaseUrl, 8).then((r) => setJobs(r.jobs)).catch(() => {});
+  }, [apiBaseUrl]);
+
+  const baseReq = (h: Hypothesis, liveMode: "mock" | "live", seeds: number[]): EnsembleRequest => ({
+    camera: { pose: { position: [-38.5, -20.0, -45.0], quaternion: [0, 0, 0, 1] } },
+    hypothesis: h, instrument_rig: "drop_flare", seeds,
+    mode: liveMode, voxel_size: voxelSize, sensor_noise_sigma_m: sensorNoise,
+  });
+
+  const layersFromResponse = (res: EnsembleResponse): LayerUris => ({
+    rgb: res.layers.imagined_consensus_rgb_b64, depth: res.layers.measured_log_depth_b64,
+    refl: res.layers.inferred_reflectivity_b64, dis: res.layers.disagreement_map_b64,
+  });
+
+  const loadLayers = async (m: RunMode | "live-probe" | "live") => {
+    setLayersBusy(true);
+    try {
+      if (m === "mock") {
+        const res = await postEnsemble(apiBaseUrl, baseReq(hypothesis, "mock", [7, 42]));
+        setLayers(layersFromResponse(res));
+      } else {
+        const seeds = m === "live-probe" ? [7] : [7, 42];
+        const { id } = await createJob(apiBaseUrl, "ensemble", baseReq(hypothesis, "live", seeds));
+        setActiveJob({ id, progress: 0 });
+        for (let i = 0; i < 120; i++) {
+          await new Promise((r) => setTimeout(r, 3000));
+          const job = await getJob(apiBaseUrl, id);
+          setActiveJob({ id, progress: job.progress });
+          if (job.status === "done" && job.result) {
+            setLayers(layersFromResponse(job.result as EnsembleResponse));
+            break;
+          }
+          if (job.status === "failed" || job.status === "cancelled") throw new Error(job.error?.detail ?? job.status);
+        }
+        setActiveJob(null);
+      }
+    } catch {
+      if (m === "mock") setLayers(null);
+    } finally {
+      setLayersBusy(false);
+      listJobs(apiBaseUrl, 8).then((r) => setJobs(r.jobs)).catch(() => {});
+    }
+  };
+
+  const requestMode = (m: RunMode | "live-probe" | "live") => {
+    if (m !== "mock" && mode === "mock") { setArmingLive(m as RunMode); return; } // spend gate
+    setArmingLive(null);
+    setMode(m);
+    void loadLayers(m);
+  };
 
   const runHypothesisCompare = async () => {
     if (!pinned) return;
     setCompare({ status: "loading", thumbs: [] });
     try {
       const hs: Hypothesis[] = ["megalithic", "karst", "artifact"];
+      const live = mode !== "mock";
       const results = await Promise.all(hs.map(async (h) => {
-        const res = await postEnsemble(apiBaseUrl, {
-          camera: { pose: { position: [-38.5, -20.0, -45.0], quaternion: [0, 0, 0, 1] } },
-          hypothesis: h, instrument_rig: "drop_flare", seeds: [7, 42],
-          mock_mode: true, voxel_size: voxelSize, sensor_noise_sigma_m: sensorNoise,
-        });
+        const req = baseReq(h, live ? "live" : "mock", live ? [7] : [7, 42]);
+        const res = live
+          ? await (async () => {
+              const { id } = await createJob(apiBaseUrl, "ensemble", req);
+              for (let i = 0; i < 120; i++) {
+                await new Promise((r) => setTimeout(r, 3000));
+                const job = await getJob(apiBaseUrl, id);
+                if (job.status === "done" && job.result) return job.result as EnsembleResponse;
+                if (job.status === "failed" || job.status === "cancelled") throw new Error(job.error?.detail ?? job.status);
+              }
+              throw new Error("compare timed out");
+            })()
+          : await postEnsemble(apiBaseUrl, req);
         return { h, uri: res.layers.imagined_consensus_rgb_b64 };
       }));
       setCompare({ status: "done", thumbs: results });
     } catch {
       setCompare({ status: "error", thumbs: [] });
+    }
+  };
+
+  const runExport = async () => {
+    setExporting(true);
+    try {
+      await exportComparisonCard(apiBaseUrl, baseReq(hypothesis, mode === "mock" ? "mock" : "live", mode === "live-probe" ? [7] : [7, 42]));
+    } catch {
+      alert("Export failed — is the backend running?");
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -300,8 +376,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
             <ZoomFit />
             <EpistemicShaderQuad measuredWeight={measuredWeight} inferredWeight={inferredWeight}
               imaginedWeight={imaginedWeight} shimmerIntensity={shimmerIntensity} loupeMode={loupeMode}
-              hypothesis={hypothesis} apiBaseUrl={apiBaseUrl} useLive={useLive}
-              voxelSize={voxelSize} sensorNoise={sensorNoise}
+              hypothesis={hypothesis} layers={layers}
               onInspectPixel={setTelemetry} onPinPixel={setPinned} />
           </Canvas>
         </div>
@@ -314,7 +389,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
           <div><span className="text-[#34D399]">ENSEMBLE SPLIT: </span><span className="text-white">{Math.round(telemetry.disagreement * 100)}%</span></div>
         </div>
       </div>
-      <div className="w-full lg:w-96 bg-[#0D0F17] border-l border-slate-800 p-5 flex flex-col gap-6">
+      <div className="w-full lg:w-96 bg-[#0D0F17] border-l border-slate-800 p-5 flex flex-col gap-6 lg:max-h-[calc(100vh-160px)] lg:overflow-y-auto">
         <div>
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
             <Layers className="w-4 h-4 text-[#00F0FF]" /><span>Epistemic Stack Mixer</span></div>
@@ -339,10 +414,69 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
               <input type="range" min="0" max="1" step="0.01" value={shimmerIntensity}
                 onChange={(e) => setShimmerIntensity(parseFloat(e.target.value))} className="w-full accent-[#34D399]" />
             </div>
-            <label className="flex items-center justify-between text-xs pt-2 border-t border-slate-800 cursor-pointer">
-              <span className="text-slate-300">Simulated ensemble layers (free)</span>
-              <input type="checkbox" checked={useLive} onChange={(e) => setUseLive(e.target.checked)} className="accent-[#00F0FF]" />
-            </label>
+            <div className="pt-2 border-t border-slate-800">
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-slate-300 font-medium">Atlas render mode</span>
+                <span className="font-mono text-[11px] text-slate-500">{layersBusy ? "working…" : layers ? "layers loaded" : "procedural fallback"}</span>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5 text-[11px]">
+                {([["mock", "Simulated"], ["live-probe", "Live probe"], ["live", "Live full"]] as const).map(([m, label]) => (
+                  <button key={m} onClick={() => requestMode(m)}
+                    className={`px-2 py-1.5 rounded-md border transition ${mode === m
+                      ? "bg-slate-800 border-[#00F0FF] text-white font-medium"
+                      : "bg-[#090A0F] border-slate-800 text-slate-400 hover:border-slate-700"}`}>{label}</button>
+                ))}
+              </div>
+              {armingLive && (
+                <div className="mt-2 p-2 rounded border border-[#FFB800]/60 bg-[#FFB800]/10 text-[11px] text-slate-200">
+                  <div className="mb-1.5">Live Atlas will bill tasks. {estimateCost(armingLive === "live-probe" ? 1 : 2, pricing, 1)}.</div>
+                  <div className="flex gap-1.5">
+                    <button onClick={() => { const m = armingLive; setArmingLive(null); setMode(m); void loadLayers(m); }}
+                      className="px-2 py-1 rounded bg-[#FFB800] text-slate-950 font-semibold">Confirm spend</button>
+                    <button onClick={() => setArmingLive(null)} className="px-2 py-1 rounded border border-slate-700">Cancel</button>
+                  </div>
+                </div>
+              )}
+              {mode !== "mock" && !armingLive && (
+                <div className="mt-2 font-mono text-[11px] text-slate-400">
+                  {estimateCost(mode === "live-probe" ? 1 : 2, pricing, 1)} per load
+                </div>
+              )}
+              {activeJob && (
+                <div className="mt-2">
+                  <div className="flex justify-between text-[11px] font-mono text-slate-400 mb-1">
+                    <span>job {activeJob.id.slice(0, 12)}… {Math.round(activeJob.progress * 100)}%</span>
+                    <button onClick={() => cancelJob(apiBaseUrl, activeJob.id).catch(() => {}).finally(() => setActiveJob(null))}
+                      className="text-[#FF2D55] hover:underline">Cancel</button>
+                  </div>
+                  <div className="h-1.5 rounded bg-slate-800 overflow-hidden">
+                    <div className="h-full bg-[#00F0FF] transition-all" style={{ width: `${Math.round(activeJob.progress * 100)}%` }} />
+                  </div>
+                </div>
+              )}
+              {layersBusy && !activeJob && <div className="mt-2 font-mono text-[11px] text-slate-400">Rendering ensemble…</div>}
+            </div>
+            <div className="pt-2 border-t border-slate-800 flex gap-2">
+              <button onClick={runExport} disabled={exporting}
+                className="flex-1 px-3 py-2 rounded-md bg-slate-800 border border-slate-700 text-xs font-medium hover:bg-slate-700 transition disabled:opacity-50">
+                {exporting ? "Exporting…" : "Export card (current view)"}
+              </button>
+              <button onClick={() => setLayers(null)}
+                className="px-3 py-2 rounded-md border border-slate-800 text-xs text-slate-400 hover:border-slate-700 transition">Reset</button>
+            </div>
+            {jobs.length > 0 && (
+              <details className="pt-2 border-t border-slate-800 text-[11px] font-mono text-slate-400">
+                <summary className="cursor-pointer hover:text-slate-200">Recent jobs ({jobs.length})</summary>
+                <div className="mt-1 space-y-0.5 max-h-28 overflow-y-auto">
+                  {jobs.map((j) => (
+                    <div key={j.id} className="flex justify-between gap-2">
+                      <span className="truncate">{j.id.slice(0, 12)}… {j.kind}</span>
+                      <span className={j.status === "done" ? "text-[#34D399]" : j.status === "failed" ? "text-[#FF2D55]" : "text-[#FFB800]"}>{j.status} {Math.round((j.progress || 0) * 100)}%</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
           </div>
         </div>
         <div>

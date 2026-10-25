@@ -42,6 +42,46 @@ def test_depth_render_endpoint_scaled_intrinsics():
     assert 0.0 < body["valid_fraction"] < 1.0
 
 
+def test_chain_multi_batch_mock():
+    r = client.post("/api/chisel/chain", params={"batches": 2}, json={
+        "camera": {"pose": {"position": [-38.5, -20.0, -45.0], "quaternion": [0, 0, 0, 1]}},
+        "seeds": [7], "voxel_size": 0.25, "mode": "mock",
+        "chain_targets": 2, "return_depth": True})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["batches"]) == 2
+    assert all(b["returned_depth"] for b in body["batches"])
+    assert "resume_hint" in body and body["resume_hint"]["start_batch"] == 2
+
+
+def test_rollout_budget_rejected():
+    r = client.post("/api/chisel/chain", params={"batches": 1}, json={
+        "camera": {"pose": {"position": [-38.5, -20.0, -45.0], "quaternion": [0, 0, 0, 1]}},
+        "seeds": [7], "mode": "mock", "chain_targets": 33})
+    assert r.status_code == 422
+
+
+def test_operator_auth_gate(monkeypatch):
+    import apps.api.main as main_mod
+
+    monkeypatch.setenv("OPERATOR_API_KEY", "secret-123")
+    # main.OPERATOR_KEY was bound at import; patch module attr directly.
+    monkeypatch.setattr(main_mod, "OPERATOR_KEY", "secret-123")
+    assert client.get("/api/health").status_code == 200  # health stays open
+    r = client.get("/api/provenance/unknown")
+    assert r.status_code == 401
+    r2 = client.get("/api/provenance/unknown", headers={"X-Duat-Key": "secret-123"})
+    assert r2.status_code == 404  # authed: passes gate, misses record
+
+
+def test_rate_limiter_unit():
+    from apps.api.main import _rate_limit_ok
+
+    ip = "test-unit-ip-1"
+    assert all(_rate_limit_ok(ip, 3) for _ in range(3))
+    assert not _rate_limit_ok(ip, 3)
+
+
 def test_degradation_sweep_ladder():
     r = client.get("/api/khafre/degradation")
     assert r.status_code == 200, r.text
@@ -56,7 +96,7 @@ def test_ensemble_posterior_resample_flag():
     r = client.post("/api/chisel/ensemble", json={
         "camera": {"pose": {"position": [-38.5, -20.0, -45.0], "quaternion": [0, 0, 0, 1]}},
         "seeds": [7, 42], "voxel_size": 0.25,
-        "mock_mode": True, "posterior_resample": True, "structural_weight": 0.5})
+        "mode": "mock", "posterior_resample": True, "structural_weight": 0.5})
     assert r.status_code == 200, r.text
     assert len(r.json()["provenance_sha256"]) == 64
 
@@ -65,7 +105,7 @@ def test_ensemble_mock_roundtrip():
     r = client.post("/api/chisel/ensemble", json={
         "camera": {"pose": {"position": [-38.5, -20.0, -45.0], "quaternion": [0, 0, 0, 1]}},
         "hypothesis": "megalithic", "instrument_rig": "drop_flare",
-        "seeds": [7, 42], "voxel_size": 0.25, "mock_mode": True})
+        "seeds": [7, 42], "voxel_size": 0.25, "mode": "mock"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert len(body["provenance_sha256"]) == 64

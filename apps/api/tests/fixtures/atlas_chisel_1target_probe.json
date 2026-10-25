@@ -1,0 +1,38 @@
+{
+ "operation_id": "ae53860d17ff4c79b0f72512b2688531",
+ "request_hash": "63ee5bb633d67b37ea442cba1e98ac55be5a017ed0e32bdc0b7c297f2daab1d9",
+ "prompt_used": "{\"tags\":[\"subterranean shaft\",\"ancient architecture\",\"spiral ramp\",\"granite blocks\",\"exploration lighting\"],\"short_caption\":\"A massive ancient subterranean vertical shaft features precision-dressed Aswan granite and weathered limestone blocks with a stepped helical spiral ramp. Illumination is provided by a tethered exploration drop-rig and a magnesium flare suspended within the space.\",\"long_caption\":\"A massive ancient subterranean vertical shaft is carved directly into the bedrock, constructed from precision-dressed Aswan granite and weathered nummulitic limestone blocks. A stepped helical spiral ramp winds continuously downward along the interior perimeter of the shaft wall, showing visible ancient copper chisel marks and powdery mineral salt efflorescence clinging to the masonry joints. The entire volume is illuminated intensely by a high-lumen tethered exploration drop-rig and an active magnesium flare suspended freely in the central void. Long, dramatic vertical shadows stretch sharply across the spiral ledge, emphasizing the sheer vertical drop and the massive scale of the architecture. Thick volumetric dust scatter drifts through the air, catching the concentrated beams of light and creating strong atmospheric beams and falloff. The high dynamic range reveals rich textural detail on every weathered stone surface, exposed mineral vein, and tool mark.\",\"style_and_atmosphere\":\"An ordinary real-world documentary photograph capturing an archaeological discovery. The visual tone is ancient, stark, monumental, and mysterious.\",\"lighting\":\"High-intensity cool white illumination emanates from a tethered exploration drop-rig, complemented by the harsh, flickering, warm-white glare of a suspended magnesium flare. The combination creates strong high-contrast lighting with deep, long vertical shadows and bright atmospheric glare.\",\"key_subjects_and_objects\":\"A heavy metal exploration drop-rig hangs suspended by a reinforced industrial cable, emitting a powerful downward cone of light. A burning magnesium flare hovers nearby, casting brilliant white sparks and intense localized illumination onto the surrounding stone walls. The masonry consists of massive Aswan granite blocks and layered nummulitic limestone blocks, marked by rough chisel grooves and encrusted with white mineral salt efflorescence.\",\"environment_and_layout\":\"The setting is an immense subterranean vertical shaft of unknown depth, enclosed by cyclopean masonry walls. A continuous stepped helical spiral ramp is carved directly into and built along the perimeter wall, forming a narrow walkway descending into the depths. The surfaces are damp, weathered, and aged by subterranean mineral deposits. Thick airborne dust fills the shaft volume, creating dense atmospheric scattering.\",\"visible_progression\":\"no clear progression is visible across the set.\",\"text_and_ocr\":{\"verbatim_strings\":[],\"notes\":\"none\"},\"artifacts_and_overlays\":\"none\"}",
+ "frames": [
+  {
+   "rgb_shape": [
+    720,
+    1280,
+    3
+   ],
+   "camera": {
+    "extrinsics": {
+     "coordinateSystem": "rub",
+     "position": [
+      -38.5,
+      -20.0,
+      -45.0
+     ],
+     "quaternion": [
+      -1.3529047866561447e-09,
+      2.60434132336347e-09,
+      -7.98837913791099e-17,
+      1.0
+     ]
+    },
+    "intrinsics": {
+     "cx": 640.0,
+     "cy": 360.0,
+     "fx": 914.0,
+     "fy": 914.0,
+     "height": 720,
+     "width": 1280
+    }
+   }
+  }
+ ]
+}

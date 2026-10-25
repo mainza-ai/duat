@@ -1,8 +1,20 @@
-// TEMP diagnostic harness (delete after use). Drives headless Chrome over CDP:
-// collects console/page errors, screenshots lens tab, helical tab, and post-NBV state.
+// Milimo Duat visual + console gate. Drives headless Chrome over CDP against
+// a RUNNING build (dev or prod), screenshots both viewports + post-NBV state,
+// and fails non-zero on unexpected console/page errors.
+//
+// Usage:
+//   SHOOT_BASE=http://localhost:5174 node scripts/visual-verify.mjs   # dev
+//   SHOOT_BASE=http://localhost:5175 node scripts/visual-verify.mjs   # prod
+// Requires: headless Chrome with --remote-debugging-port=9222, backend up.
+// Known-benign patterns (React dev StrictMode remount race) are allowlisted;
+// everything else fails the gate.
 const BASE = process.env.SHOOT_BASE || "http://localhost:5174";
 const CDP = "http://127.0.0.1:9222/json/list";
-const out = (n) => `./shots/${n}.png`;
+const out = (n) => `/Users/mck/Desktop/duat/shots/${n}.png`;
+
+const BENIGN = [
+  "Attempted to synchronously unmount a root", // React 19 dev StrictMode double-mount; absent from prod builds
+];
 
 let targets = await (await fetch(CDP)).json();
 // Close stale app tabs from earlier runs so we drive exactly one fresh page.
@@ -30,7 +42,8 @@ ws.onopen = async () => {
       errors.push(`[${m.params.type}] ` + (m.params.args || []).map((a) => a.value ?? a.description ?? "").join(" ").slice(0, 300));
     if (m.method === "Runtime.exceptionThrown")
       errors.push("[exception] " + (m.params.exceptionDetails.text || "") + " " + (m.params.exceptionDetails.exception?.description || "").slice(0, 300));
-    if (m.method === "Log.entryAdded") errors.push("[log." + m.params.entry.level + "] " + m.params.entry.text.slice(0, 300));
+    if (m.method === "Log.entryAdded" && (m.params.entry.level === "error" || m.params.entry.level === "verbose"))
+      errors.push("[log." + m.params.entry.level + "] " + m.params.entry.text.slice(0, 300));
   };
   await send("Runtime.enable"); await send("Page.enable"); await send("Log.enable");
   const shot = async (name) => {
@@ -39,17 +52,30 @@ ws.onopen = async () => {
     console.log("saved", out(name));
   };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const textPresent = async (needle) => {
+    const r = await send("Runtime.evaluate", { expression: `document.body.innerText.includes(${JSON.stringify(needle)})` });
+    return r.result.value === true;
+  };
+  const failures = [];
+  const check = (name, ok) => { console.log((ok ? "PASS " : "FAIL ") + name); if (!ok) failures.push(name); };
   await sleep(6000);
   await shot("lens");
-  // click the helical tab (second tab button)
+  check("lens viewport banner", await textPresent("MODEL PREDICTION"));
   await send("Runtime.evaluate", { expression: `[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Helical')).click()` });
   await sleep(8000);
   await shot("helical");
-  // click Jump to NBV
+  check("helical viewport banner", await textPresent("HELICAL DESCENT"));
+  check("backend trajectory wired", await textPresent("SRC:API"));
   await send("Runtime.evaluate", { expression: `[...document.querySelectorAll('button')].find(b=>b.textContent.includes('NBV')).click()` });
   await sleep(4000);
   await shot("nbv");
-  console.log("ERRORS:\n" + (errors.length ? errors.join("\n") : "(none)"));
-  ws.close(); process.exit(0);
+  check("NBV selected", await textPresent("POSE #19/32"));
+  const real = errors.filter((e) => !BENIGN.some((b) => e.includes(b)));
+  console.log("console errors (non-benign):", real.length ? "\n" + real.join("\n") : "(none)");
+  if (real.length) failures.push(`${real.length} console error(s)`);
+  ws.close();
+  if (failures.length) { console.error("GATE FAILED:", failures.join("; ")); process.exit(1); }
+  console.log("GATE PASSED");
+  process.exit(0);
 };
 ws.onerror = (e) => { console.error("ws error", e.message); process.exit(1); };

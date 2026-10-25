@@ -5,6 +5,8 @@ export interface AtlasCamera {
   extrinsics: { position: [number, number, number]; quaternion: [number, number, number, number]; coordinateSystem: "rub" | "rdf" };
 }
 
+export type RunMode = "mock" | "live";
+
 export interface EnsembleRequest {
   camera: { width?: number; height?: number; fov_deg?: number; coordinate_system?: "rub" | "rdf";
     pose: { position: [number, number, number]; quaternion: [number, number, number, number] } };
@@ -15,7 +17,9 @@ export interface EnsembleRequest {
   sensor_noise_sigma_m?: number;
   z_min?: number;
   z_max?: number | null;
-  mock_mode?: boolean;
+  mode?: RunMode;
+  structural_weight?: number;
+  posterior_resample?: boolean;
 }
 
 export interface EnsembleResponse {
@@ -44,6 +48,62 @@ export async function postEnsemble(baseUrl: string, req: EnsembleRequest): Promi
   });
   if (!res.ok) throw new Error(`ensemble failed: ${res.status} ${await res.text()}`);
   return res.json();
+}
+
+export interface PricingInfo {
+  credits_per_usd: number;
+  atlas_chisel_1t_credits: number | null;
+  atlas_chisel_32t_credits: number | null;
+  note: string;
+}
+
+export interface JobRecord {
+  id: string; kind: string; status: string; progress: number;
+  result?: EnsembleResponse & { batches?: { batch: number; operation_id: string }[] };
+  error?: { code: string; detail: string };
+}
+
+export async function fetchPricing(baseUrl: string): Promise<PricingInfo> {
+  const res = await fetch(`${baseUrl}/api/pricing`);
+  if (!res.ok) throw new Error("pricing unavailable");
+  return res.json();
+}
+
+export async function createJob(baseUrl: string, kind: "ensemble" | "chain", request: EnsembleRequest): Promise<{ id: string; status: string; deduplicated: boolean }> {
+  const res = await fetch(`${baseUrl}/api/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind, request }),
+  });
+  if (!res.ok) throw new Error(`job create failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+export async function getJob(baseUrl: string, id: string): Promise<JobRecord> {
+  const res = await fetch(`${baseUrl}/api/jobs/${id}`);
+  if (!res.ok) throw new Error(`job fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function cancelJob(baseUrl: string, id: string): Promise<JobRecord> {
+  const res = await fetch(`${baseUrl}/api/jobs/${id}/cancel`, { method: "POST" });
+  if (!res.ok) throw new Error(`job cancel failed: ${res.status}`);
+  return res.json();
+}
+
+export async function listJobs(baseUrl: string, limit = 20): Promise<{ jobs: JobRecord[] }> {
+  const res = await fetch(`${baseUrl}/api/jobs?limit=${limit}`);
+  if (!res.ok) throw new Error(`job list failed: ${res.status}`);
+  return res.json();
+}
+
+/** Cost preview: tasks × configured rate, or "unknown" when unset. */
+export function estimateCost(tasks: number, pricing: PricingInfo | null, perTarget = 1): string {
+  if (!pricing) return `${tasks} task(s) · rate unknown`;
+  const rate = perTarget <= 1 ? pricing.atlas_chisel_1t_credits : pricing.atlas_chisel_32t_credits;
+  if (rate == null) return `${tasks} task(s) · rate unknown (set ATLAS_CREDITS_PER_CHISEL_*)`;
+  const usd = (tasks * rate) / pricing.credits_per_usd;
+  return `${tasks} task(s) ≈ ${rate * tasks} credits ($${usd.toFixed(2)})`;
 }
 
 /** Download a composite comparison card with the provenance bar baked in. */

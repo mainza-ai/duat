@@ -1,3 +1,16 @@
+## [2026-10-25] build | Phases 0–5 implemented under 1,000-credit cap (1 live task)
+
+- Mode flag (mock/live/probe) + spend confirm, deterministic idempotency keys,
+  retry/backoff + typed Atlas errors (402/409/422/429/504), pinned deps, CI, `.env.example`.
+- ONE live 1-target probe fired (op `ae53860d…`); fixture recorded; respx suite green.
+- SQLite store + artifacts + jobs API (deduplicating IDs, progress, cancel); lazy volume init.
+- Full-trajectory chaining (1:1 context frames, promptUsed reuse, resume hints,
+  rollout guard, returnDepth), resample default ON.
+- Frontend: 3-mode renderer, cost preview, job progress + cancel, export-from-current-view,
+  code-split, zero-console-error e2e gate on prod build.
+- Hardening: operator key, rate limits, upload caps, CORS allow-list, request IDs,
+  structured logs, prod Docker, mock-only load script. Pilot HELD (over budget).
+
 ## [2026-10-25] fix | 3D view broken — backend/scene frame mismatch
 
 - Root cause: the navigator fetched live backend cameras (Z-up Khafre frame,

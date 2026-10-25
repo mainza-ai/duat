@@ -1,4 +1,4 @@
-.PHONY: help install api web test showcase clean
+.PHONY: help install api web test showcase clean prod prod-down loadtest
 
 help:
 	@echo "Duat Local Orchestration Commands:"
@@ -7,6 +7,8 @@ help:
 	@echo "  make web      - Start the Vite React frontend dev server on port 5173"
 	@echo "  make test     - Run backend test suite (mock mode, no API key needed)"
 	@echo "  make showcase - Synthesize Khafre showcase meshes + manifest"
+	@echo "  make prod     - Build + run production stack (nginx :8080 -> API)"
+	@echo "  make loadtest - Mock-only load probe (zero Atlas spend)"
 	@echo "  make clean    - Remove build artifacts and temporary caches"
 
 install:
@@ -27,3 +29,12 @@ showcase:
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
+
+prod:
+	docker compose up --build -d
+
+prod-down:
+	docker compose down
+
+loadtest:
+	python3 scripts/load_test.py

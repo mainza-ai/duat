@@ -1,18 +1,27 @@
 /**
  * duat/apps/web/src/App.tsx — Master Application Shell for Project Duat.
  */
-import React, { useState, useEffect } from "react";
-import { Layers, Compass, Server, ShieldCheck, Download } from "lucide-react";
-import { EpistemicLensViewport } from "./components/EpistemicLensViewport";
-import { HelicalDescentNavigator } from "./components/HelicalDescentNavigator";
+import React, { useState, useEffect, Suspense, lazy } from "react";
+import { Layers, Compass, Server, ShieldCheck } from "lucide-react";
 import { ViewportErrorBoundary } from "./components/ErrorBoundary";
-import { exportComparisonCard } from "./lib/api";
+
+const EpistemicLensViewport = lazy(() =>
+  import("./components/EpistemicLensViewport").then((m) => ({ default: m.EpistemicLensViewport })));
+const HelicalDescentNavigator = lazy(() =>
+  import("./components/HelicalDescentNavigator").then((m) => ({ default: m.HelicalDescentNavigator })));
+
+const ViewportFallback: React.FC<{ label: string }> = ({ label }) => (
+  <div className="flex-1 min-h-[480px] flex items-center justify-center bg-[#090A0F] text-slate-400 font-mono text-sm">
+    Loading {label}…
+  </div>
+);
 
 export function App() {
   const [activeTab, setActiveTab] = useState<"observatory" | "helical">("observatory");
   const [apiStatus, setApiStatus] = useState<"checking" | "live" | "mock" | "offline">("checking");
-  const [exporting, setExporting] = useState(false);
-  const [apiBaseUrl] = useState<string>("http://127.0.0.1:8001"); // LOCAL-ONLY (untracked): :8000 occupied on this machine
+  // Bake in at build time for production (VITE_API_BASE_URL), else local dev default.
+  const [apiBaseUrl] = useState<string>(
+    ((import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_BASE_URL || "http://localhost:8000"));
 
   useEffect(() => {
     const checkApi = async () => {
@@ -59,26 +68,9 @@ export function App() {
               : apiStatus === "mock" ? "Mock · simulated"
               : apiStatus === "checking" ? "Connecting…" : "Offline"}</span>
           </div>
-          <button
-            disabled={exporting || apiStatus === "offline" || apiStatus === "checking"}
-            title={apiStatus === "offline" ? "Backend unreachable" : "Download PNG comparison card with baked-in provenance bar"}
-            onClick={async () => {
-              setExporting(true);
-              try {
-                const name = await exportComparisonCard(apiBaseUrl, {
-                  camera: { pose: { position: [-38.5, -20.0, -45.0], quaternion: [0, 0, 0, 1] } },
-                  hypothesis: "megalithic", instrument_rig: "drop_flare",
-                  seeds: [7, 42], voxel_size: 0.25, mock_mode: true,
-                });
-                alert(`Exported ${name}`);
-              } catch {
-                alert("Export failed — is the backend running?");
-              } finally {
-                setExporting(false);
-              }
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 text-xs font-medium text-slate-200 hover:bg-slate-700 transition shadow disabled:opacity-50">
-            <Download className="w-3.5 h-3.5 text-[#00F0FF]" /><span>{exporting ? "Exporting…" : "Export Card"}</span></button>
+          <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 text-[11px] font-mono text-slate-500" title="Export lives in the Epistemic Lens deck and uses the current view state">
+            <span>Export: Lens deck → Export card</span>
+          </div>
         </div>
       </header>
       {/* Both viewports stay mounted (hidden tab renders nothing) so switching
@@ -90,7 +82,9 @@ export function App() {
             <div className="text-xs text-[#34D399] font-mono flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" /><span>Zero-Vividness-Bias Provenance Layer Active</span></div>
           </div>
           <ViewportErrorBoundary name="Epistemic Lens">
-            <EpistemicLensViewport apiBaseUrl={apiBaseUrl} active={activeTab === "observatory"} />
+            <Suspense fallback={<ViewportFallback label="Epistemic Lens" />}>
+              <EpistemicLensViewport apiBaseUrl={apiBaseUrl} active={activeTab === "observatory"} />
+            </Suspense>
           </ViewportErrorBoundary>
         </div>
         <div className="flex-1 flex-col gap-4" style={{ display: activeTab === "helical" ? "flex" : "none" }}>
@@ -99,7 +93,9 @@ export function App() {
             <div className="text-xs text-[#00F0FF] font-mono">Live Planar-Depth RGBD Back-Projection Active</div>
           </div>
           <ViewportErrorBoundary name="Helical Descent">
-            <HelicalDescentNavigator apiBaseUrl={apiBaseUrl} active={activeTab === "helical"} />
+            <Suspense fallback={<ViewportFallback label="Helical Descent" />}>
+              <HelicalDescentNavigator apiBaseUrl={apiBaseUrl} active={activeTab === "helical"} />
+            </Suspense>
           </ViewportErrorBoundary>
         </div>
       </main>

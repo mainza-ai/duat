@@ -1,11 +1,24 @@
 # MILIMO DUAT — Production Implementation Plan (for review)
 
-**Status:** draft for review · **Principle:** live Atlas is the product; mock is a thin offline
-fallback, never a substitute. No demo shortcuts — every item below is build-once, production-grade.
+**Status:** Phases 0–5 core implementation COMPLETE on `develop` (see "Build status"
+below); Phase 6 pilot HELD (exceeds the 1,000-credit cap — needs explicit approval
++ funded project cap). Live Atlas calls to date: **1** (one 1-target probe).
+
+**Principle:** live Atlas is the product; mock is a thin offline fallback, never a substitute. No demo shortcuts — every item below is build-once, production-grade.
 
 Companion: `docs/AUDIT.md` (verified findings). Live API contract: `wiki/atlas-compliance.md`.
 
 ---
+
+## Build status (what is already done vs this plan)
+
+- Phase 0 ✅ mode flag, deterministic idempotency, retry/backoff + typed errors, pinned deps, CI, `.env.example`.
+- Phase 1 ✅ respx contract suite (5 tests), ONE live 1-target probe (op `ae53860d…`), recorded fixture, spend ledger opened (1 task).
+- Phase 2 ✅ SQLite store + content-addressed artifacts, jobs API (submit-once semantics, progress, cancel), lazy volume init, `/api/ready`.
+- Phase 3 ✅ production chaining (full 32-cam trajectory, per-target 1:1 context, promptUsed reuse, resume hints, rollout guard, returnDepth), posterior resample default ON (1.26 s/render measured).
+- Phase 4 ✅ live-first frontend (Simulated / Live-probe / Live-full with spend confirm, cost preview, job progress + cancel, export uses current view, code-split, e2e gate passing on prod build).
+- Phase 5 ✅ operator key auth, per-IP rate limits, upload caps + magic bytes, CORS allow-list, request IDs + structured logs, health depth checks, prod Docker (nginx + gunicorn-style workers), mock-only load script.
+- Phase 6 ⏸ HELD — pilot run deferred: 28–40 tasks exceeds the 1,000-credit cap. Approve + fund to proceed.
 
 ## 0. Terminology & cost model
 
