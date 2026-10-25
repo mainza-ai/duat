@@ -14,7 +14,7 @@
   procedural fallback textures; live `POST /api/chisel/ensemble` wiring via
   `lib/api.ts` + `TextureLoader`.
 - `components/HelicalDescentNavigator.tsx` — shaft cutaway + spiral mesh,
-  32 frustums (cyan selected, orange NBV), `RGBDPointCloud` back-projection
+  32 frustums (cyan selected, emerald NBV), `RGBDPointCloud` back-projection
   (`x=(u-cx)z/fx, y=-(v-cy)z/fy` in camera space → world), orbit vs borescope
   POV, auto-descend playback, intrinsics card, chaining callout.
 - `lib/api.ts` — typed client + Atlas camera builders + PNG data-URL →
@@ -23,7 +23,7 @@
 ## Palette
 
 - Obsidian `#090A0F`, cyan `#00F0FF` (Measured), amber `#FFB800` (Inferred),
-  orange `#FF6B1A` (variance), emerald RGB accent.
+  orange `#34D399` (variance), emerald RGB accent.
 
 ## Sources
 

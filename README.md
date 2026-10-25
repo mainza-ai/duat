@@ -11,7 +11,7 @@ into **navigable, photorealistic, provenance-tracked 3D interiors** via
 World Labs Marble 2 / Atlas `atlasChisel`.
 
 [![Status](https://img.shields.io/badge/status-beta-00F0FF?style=flat-square)](docs/BLUEPRINT.md)
-[![Atlas](https://img.shields.io/badge/Atlas-atlasChisel-FF6B1A?style=flat-square)](https://atlas-beta.worldlabs.ai/docs/depth-guided-generation)
+[![Atlas](https://img.shields.io/badge/Atlas-atlasChisel-34D399?style=flat-square)](https://atlas-beta.worldlabs.ai/docs/depth-guided-generation)
 [![Tests](https://img.shields.io/badge/tests-12_passing-00c853?style=flat-square)](apps/api/tests)
 [![Stack](https://img.shields.io/badge/stack-React_19_%2B_R3F_%2B_FastAPI-FFB800?style=flat-square)](docs/BLUEPRINT.md)
 
@@ -20,8 +20,8 @@ World Labs Marble 2 / Atlas `atlasChisel`.
 | Tier | Meaning | Color |
 |:-----|:--------|:------|
 | **1 · Measured** | Sensor boundary mesh, error bars, planar-depth maps | 🟦 `#00F0FF` |
-| **2 · Inferred** | Dielectric / density / moisture proxies | 🟧 `#FFB800` |
-| **3 · Imagined** | `atlasChisel` render + ensemble consensus & disagreement | 🟧 `#FF6B1A` |
+| **2 · Inferred** | Dielectric / density / moisture proxies | 🟩 `#FFB800` |
+| **3 · Imagined** | `atlasChisel` render + ensemble consensus & disagreement | 🟩 `#34D399` |
 
 > `MODEL PREDICTION — CONDITIONED ON SENSOR GEOMETRY`
 

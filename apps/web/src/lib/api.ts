@@ -95,7 +95,7 @@ export async function exportComparisonCard(
   };
   tier(1380, "#00F0FF", "T1 Measured");
   tier(1580, "#FFB800", "T2 Inferred");
-  tier(1760, "#FF6B1A", "T3 Imagined");
+  tier(1760, "#34D399", "T3 Imagined");
 
   // Panels
   const panel = (img: HTMLImageElement, x: number, label: string, color: string) => {
@@ -107,16 +107,16 @@ export async function exportComparisonCard(
   };
   panel(depth, 24, "TIER 1 · MEASURED DEPTH (0 = EMPTY VOID)", "#00F0FF");
   panel(refl, 660, "TIER 2 · DIELECTRIC PROXY", "#FFB800");
-  panel(rgb, 1296, "TIER 3 · ATLAS CONSENSUS", "#FF6B1A");
+  panel(rgb, 1296, "TIER 3 · ATLAS CONSENSUS", "#34D399");
   // Disagreement inset on the consensus panel
   g.drawImage(dis, 1296 + 600 - 190, 165 + 338 - 112, 170, 96);
-  g.fillStyle = "#FF6B1A"; g.font = "bold 18px monospace";
+  g.fillStyle = "#34D399"; g.font = "bold 18px monospace";
   g.fillText("VARIANCE", 1296 + 600 - 190, 165 + 338 - 118);
 
   // Footer: prompt + params + badge
   g.fillStyle = "#0D0F17";
   g.fillRect(0, 560, W, H - 560);
-  g.fillStyle = "#FF6B1A";
+  g.fillStyle = "#34D399";
   g.fillRect(24, 590, 6, 120);
   g.fillStyle = "#cbd2dc"; g.font = "22px monospace";
   wrapText(g, `PROMPT: ${res.prompt_used}`, 48, 615, W - 96, 30);
@@ -127,7 +127,7 @@ export async function exportComparisonCard(
     48, 740);
   g.fillStyle = "#090A0F";
   g.fillRect(0, H - 90, W, 90);
-  g.fillStyle = "#FF6B1A";
+  g.fillStyle = "#34D399";
   g.fillRect(0, H - 90, W, 4);
   g.fillStyle = "#ffffff"; g.font = "bold 24px monospace";
   g.fillText("MODEL PREDICTION — CONDITIONED ON SENSOR GEOMETRY · NOT GROUND TRUTH", 48, H - 38);

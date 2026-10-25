@@ -17,7 +17,7 @@ resolved properly, not worked around.
 | 3 | Point cloud was fake geometry | Synthetic spiral pattern, mismatched with active camera | New `POST /api/khafre/depth` (scaled intrinsics, 0.94 valid fraction); points unprojected from MEASURED depth; colors derived (hillshade / dielectric / iso-depth / occlusion proxy), honestly labeled | `PTS:MEASURED` badge in HUD; wall-hugging cloud in screenshots |
 | 4 | Lens quad small / letterboxed | Fixed zoom 45 + flex-height canvas + stretched column | `ZoomFit` (zoom = min(w/16, h/9)) + exact 16:9 canvas | Fills viewport width, zero internal bands |
 | 5 | Tab switch could blank the app | R3F root unmount race (dev StrictMode double-mount; one non-fatal portal race remains in prod) | Both Canvases stay mounted (display toggle) + `frameloop never` when hidden + `ViewportErrorBoundary` per tab | Prod build: app renders through all tabs |
-| 6 | Thematic violet + "Quantum" naming | Generic-AI aesthetic | Signal orange `#FF6B1A`, "Variance Shimmer", honest labels everywhere | Repo-wide sweep: zero matches |
+| 6 | Thematic violet + "Quantum" naming | Generic-AI aesthetic | Signal orange `#34D399`, "Variance Shimmer", honest labels everywhere | Repo-wide sweep: zero matches |
 
 ---
 

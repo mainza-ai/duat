@@ -87,7 +87,7 @@ export function App() {
         <div className="flex-1 flex-col gap-4" style={{ display: activeTab === "observatory" ? "flex" : "none" }}>
           <div className="flex items-center justify-between">
             <div className="text-xs text-slate-400 font-mono">FLAGSHIP DATASET: <span className="text-white">Khafre Pyramid Subterranean SAR Anomalies (8 Shafts + Basal Chambers)</span></div>
-            <div className="text-xs text-[#FF6B1A] font-mono flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" /><span>Zero-Vividness-Bias Provenance Layer Active</span></div>
+            <div className="text-xs text-[#34D399] font-mono flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" /><span>Zero-Vividness-Bias Provenance Layer Active</span></div>
           </div>
           <ViewportErrorBoundary name="Epistemic Lens">
             <EpistemicLensViewport apiBaseUrl={apiBaseUrl} active={activeTab === "observatory"} />

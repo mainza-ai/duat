@@ -6,7 +6,7 @@
 import React, { useMemo, useRef, useState, useEffect } from "react";
 import * as THREE from "three";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, Line, PerspectiveCamera, Html } from "@react-three/drei";
+import { OrbitControls, Line, PerspectiveCamera } from "@react-three/drei";
 import { Compass, Video, Cpu, Play, Pause, Layers, Crosshair } from "lucide-react";
 import { renderDepth, decodeGrayscalePng, decodeLogDepthByte } from "../lib/api";
 
@@ -75,9 +75,9 @@ const KhafreShaftCutawayMesh: React.FC<{ showWireframe: boolean }> = ({ showWire
 };
 
 const CameraFrustumNode: React.FC<{
-  cam: PosedCameraSpec; isSelected: boolean; labelsVisible: boolean; onSelect: (i: number) => void;
-}> = ({ cam, isSelected, labelsVisible, onSelect }) => {
-  const color = cam.isNextBestView ? "#FF6B1A" : isSelected ? "#00F0FF" : "#475569";
+  cam: PosedCameraSpec; isSelected: boolean; onSelect: (i: number) => void;
+}> = ({ cam, isSelected, onSelect }) => {
+  const color = cam.isNextBestView ? "#34D399" : isSelected ? "#00F0FF" : "#475569";
   const frustumPoints = useMemo(() => {
     const scale = isSelected ? 1.4 : 0.75, w = 0.8 * scale, h = 0.45 * scale, z = -1.2 * scale;
     const o = new THREE.Vector3(0, 0, 0);
@@ -90,15 +90,6 @@ const CameraFrustumNode: React.FC<{
       onClick={(e) => { e.stopPropagation(); onSelect(cam.index); }}>
       <Line points={frustumPoints} color={color} lineWidth={isSelected || cam.isNextBestView ? 2.2 : 1.0} />
       <mesh><sphereGeometry args={[isSelected ? 0.28 : 0.16, 12, 12]} /><meshBasicMaterial color={color} /></mesh>
-      {(isSelected || cam.isNextBestView) && labelsVisible && (
-        <Html distanceFactor={72} position={[0, 0.6, 0]} zIndexRange={[30, 0]}>
-          <div className={`px-2 py-0.5 rounded text-[10px] font-mono whitespace-nowrap border shadow-lg pointer-events-none ${
-            cam.isNextBestView ? "bg-[#FF6B1A]/90 border-orange-300 text-white" : "bg-[#090A0F]/90 border-[#00F0FF] text-[#00F0FF]"}`}>
-            {cam.isNextBestView ? `NBV TARGET #${cam.index + 1} (SPLIT ${Math.round(cam.disagreementScore * 100)}%)`
-              : `CAM #${cam.index + 1} (Z=${cam.position[1]}m)`}
-          </div>
-        </Html>
-      )}
     </group>
   );
 };
@@ -322,7 +313,7 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
             <span>SHAFT #2 (WEST ROW)</span>
             <span className="text-slate-500">SRC:{trajSource === "backend" ? "API" : "LOCAL"}</span>
             <span className="text-slate-500">PTS:{depthSrc === "live" ? "MEASURED" : depthSrc === "pending" ? "…" : "OFFLINE"}</span>
-            <span className="text-[#00F0FF]">POSE #{activeCam.index + 1}/32 (DEPTH: {activeCam.position[1]}m)</span></div>
+            <span className="text-[#00F0FF]">POSE #{activeCam.index + 1}/32 (DEPTH: {activeCam.position[1]}m){activeCam.isNextBestView ? " · NBV" : ""}</span></div>
         </div>
         <div className="relative flex-1 w-full h-full">
           <Canvas frameloop={active === false ? "never" : "always"}>
@@ -337,7 +328,7 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
             <pointLight position={[0, activeCam.position[1], 0]} intensity={2.2} distance={45} />
             <KhafreShaftCutawayMesh showWireframe={showShaftWireframe} />
             <Line points={splinePoints} color="#00F0FF" lineWidth={1.5} transparent opacity={0.45} />
-            {cameras.map((cam) => (<CameraFrustumNode key={cam.index} cam={cam} isSelected={cam.index === selectedIdx} labelsVisible={flyTo === null} onSelect={(i) => selectCam(i, false)} />))}
+            {cameras.map((cam) => (<CameraFrustumNode key={cam.index} cam={cam} isSelected={cam.index === selectedIdx} onSelect={(i) => selectCam(i, false)} />))}
             <BackProjectedPointCloud sceneCam={activeCam} depthReq={depthReq} apiBaseUrl={apiBaseUrl}
               colorMode={colorMode} pointSize={pointSize} onSource={setDepthSrc} />
           </Canvas>
@@ -353,7 +344,7 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
               onChange={(e) => selectCam(parseInt(e.target.value, 10), false)} className="w-full accent-[#00F0FF]" />
             <span className="font-mono text-[#00F0FF] whitespace-nowrap">Z = {activeCam.position[1]}m</span></div>
           <button onClick={() => selectCam(18, true)}
-            className="px-2.5 py-1.5 rounded border border-[#FF6B1A] bg-[#FF6B1A]/15 text-[#FF6B1A] font-mono text-[11px] hover:bg-[#FF6B1A]/25 transition">Jump to NBV (#19){flyTo ? " · flying…" : ""}</button>
+            className="px-2.5 py-1.5 rounded border border-[#34D399] bg-[#34D399]/15 text-[#34D399] font-mono text-[11px] hover:bg-[#34D399]/25 transition">Jump to NBV (#19){flyTo ? " · flying…" : ""}</button>
         </div>
       </div>
       <div className="w-full lg:w-96 bg-[#0D0F17] border-l border-slate-800 p-5 flex flex-col gap-6">
@@ -400,7 +391,7 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
             <div className="flex justify-between"><span className="text-slate-500">FOCAL (fx, fy):</span><span>({activeCam.fx}, {activeCam.fy}) px</span></div>
             <div className="flex justify-between"><span className="text-slate-500">POSITION (m):</span><span className="text-[#00F0FF]">[{activeCam.position.join(", ")}]</span></div>
             <div className="flex justify-between"><span className="text-slate-500">QUATERNION:</span><span>[{activeCam.quaternion.map((q) => q.toFixed(2)).join(", ")}]</span></div>
-            <div className="flex justify-between pt-1.5 border-t border-slate-800"><span className="text-[#FF6B1A]">ENSEMBLE DISAGREEMENT:</span>
+            <div className="flex justify-between pt-1.5 border-t border-slate-800"><span className="text-[#34D399]">ENSEMBLE DISAGREEMENT:</span>
               <span className="text-white font-semibold">{Math.round(activeCam.disagreementScore * 100)}%</span></div>
           </div>
         </div>

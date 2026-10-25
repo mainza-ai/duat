@@ -37,7 +37,7 @@ uniform float uTime;
 const vec3 COLOR_OBSIDIAN = vec3(0.035, 0.039, 0.059);
 const vec3 COLOR_MEASURED = vec3(0.0, 0.941, 1.0);
 const vec3 COLOR_INFERRED = vec3(1.0, 0.722, 0.0);
-const vec3 COLOR_SHIMMER  = vec3(1.0, 0.420, 0.102);
+const vec3 COLOR_SHIMMER  = vec3(0.204, 0.827, 0.600); // #34D399 emerald (Tier 3: Imagined/variance)
 
 // OFFICIAL Atlas inverted log-depth: 255 = zMin (near), 0 = empty.
 float decodePlanarDepth(float rawSample, out bool isEmpty) {
@@ -284,7 +284,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
 
   return (
     <div className="flex flex-col lg:flex-row w-full min-h-[720px] bg-[#090A0F] text-slate-100 font-sans border border-slate-800 rounded-xl overflow-hidden shadow-2xl">
-      <div className="relative flex-1 bg-black flex flex-col justify-between min-h-[480px]">
+      <div className="relative flex-1 bg-black flex flex-col justify-start min-h-[480px]">
         <div className="z-10 flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-[#090A0F]/90 backdrop-blur-md border-b border-slate-800 text-xs">
           <div className="flex items-center gap-2">
             <ShieldAlert className="w-4 h-4 text-[#FFB800]" />
@@ -311,7 +311,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
           <div><span className="text-[#00F0FF]">MEASURED Z: </span>
             <span className="text-white">{telemetry.planarZ === 0 ? "0.0m (EMPTY VOID)" : `${telemetry.planarZ}m`}</span></div>
           <div><span className="text-[#FFB800]">DIELECTRIC: </span><span className="text-white">{telemetry.reflectivity}</span></div>
-          <div><span className="text-[#FF6B1A]">ENSEMBLE SPLIT: </span><span className="text-white">{Math.round(telemetry.disagreement * 100)}%</span></div>
+          <div><span className="text-[#34D399]">ENSEMBLE SPLIT: </span><span className="text-white">{Math.round(telemetry.disagreement * 100)}%</span></div>
         </div>
       </div>
       <div className="w-full lg:w-96 bg-[#0D0F17] border-l border-slate-800 p-5 flex flex-col gap-6">
@@ -334,10 +334,10 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
             ))}
             <div className="pt-2 border-t border-slate-800">
               <div className="flex justify-between text-xs mb-1">
-                <span className="text-[#FF6B1A] font-medium flex items-center gap-1"><Sparkles className="w-3.5 h-3.5" /> Variance Shimmer</span>
+                <span className="text-[#34D399] font-medium flex items-center gap-1"><Sparkles className="w-3.5 h-3.5" /> Variance Shimmer</span>
                 <span className="font-mono">{Math.round(shimmerIntensity * 100)}%</span></div>
               <input type="range" min="0" max="1" step="0.01" value={shimmerIntensity}
-                onChange={(e) => setShimmerIntensity(parseFloat(e.target.value))} className="w-full accent-[#FF6B1A]" />
+                onChange={(e) => setShimmerIntensity(parseFloat(e.target.value))} className="w-full accent-[#34D399]" />
             </div>
             <label className="flex items-center justify-between text-xs pt-2 border-t border-slate-800 cursor-pointer">
               <span className="text-slate-300">Simulated ensemble layers (free)</span>
@@ -360,7 +360,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
         </div>
         <div>
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
-            <Sliders className="w-4 h-4 text-[#FF6B1A]" /><span>Hypothesis Prior (Same Geometry)</span></div>
+            <Sliders className="w-4 h-4 text-[#34D399]" /><span>Hypothesis Prior (Same Geometry)</span></div>
           <div className="flex flex-col gap-2 text-xs">
             {([
               ["megalithic", "Megalithic Architecture", "Dressed limestone & granite spiral ramp, high-lumen drop flare"],
@@ -369,7 +369,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
             ] as [Hypothesis, string, string][]).map(([key, title, desc]) => (
               <button key={key} onClick={() => setHypothesis(key)}
                 className={`p-3 rounded-lg border text-left transition ${hypothesis === key
-                  ? "bg-slate-800/90 border-[#FF6B1A] text-white" : "bg-[#090A0F] border-slate-800 text-slate-400 hover:border-slate-700"}`}>
+                  ? "bg-slate-800/90 border-[#34D399] text-white" : "bg-[#090A0F] border-slate-800 text-slate-400 hover:border-slate-700"}`}>
                 <div className="font-semibold text-slate-100">{title}</div>
                 <div className="text-[11px] text-slate-400 mt-0.5">{desc}</div>
               </button>
@@ -398,9 +398,9 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
           </div>
         </div>
         {pinned && (
-          <div className="p-3.5 rounded-lg bg-[#090A0F] border border-[#FF6B1A]/50 text-xs">
+          <div className="p-3.5 rounded-lg bg-[#090A0F] border border-[#34D399]/50 text-xs">
             <div className="flex items-center justify-between mb-2">
-              <span className="font-semibold text-[#FF6B1A]">Pinned Inspection (click viewport to re-pin)</span>
+              <span className="font-semibold text-[#34D399]">Pinned Inspection (click viewport to re-pin)</span>
               <button onClick={() => { setPinned(null); setCompare({ status: "idle", thumbs: [] }); }}
                 className="text-slate-500 hover:text-white font-mono">✕</button>
             </div>
@@ -410,7 +410,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
             </div>
             {compare.status === "idle" && (
               <button onClick={runHypothesisCompare}
-                className="w-full px-3 py-2 rounded-md bg-[#FF6B1A]/15 border border-[#FF6B1A]/50 text-[#FF6B1A] text-xs font-medium hover:bg-[#FF6B1A]/25 transition">
+                className="w-full px-3 py-2 rounded-md bg-[#34D399]/15 border border-[#34D399]/50 text-[#34D399] text-xs font-medium hover:bg-[#34D399]/25 transition">
                 Compare 3 hypotheses here (simulated)</button>
             )}
             {compare.status === "loading" && <div className="text-slate-400 font-mono text-[11px]">Simulating 3 hypotheses…</div>}
@@ -427,8 +427,8 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
             )}
           </div>
         )}
-        <div className="mt-auto p-3.5 rounded-lg bg-[#FF6B1A]/10 border border-[#FF6B1A]/40 text-xs">
-          <div className="flex items-center gap-2 font-semibold text-[#FF6B1A] mb-1">
+        <div className="mt-auto p-3.5 rounded-lg bg-[#34D399]/10 border border-[#34D399]/40 text-xs">
+          <div className="flex items-center gap-2 font-semibold text-[#34D399] mb-1">
             <Radar className="w-4 h-4" /><span>Next-Best-View Target Identified</span></div>
           <p className="text-slate-300 leading-relaxed text-[11px]">
             Ensemble disagreement peaks at <span className="font-mono text-white">Z = -112.4m (Spiral Ledge #4)</span>.
