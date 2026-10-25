@@ -148,7 +148,7 @@ const KhafreShaftCutawayMesh: React.FC<{ showWireframe: boolean; spiral: "interi
           vertexColors
           side={THREE.DoubleSide}
           transparent
-          opacity={0.16}
+          opacity={0.24}
           roughness={0.8}
           polygonOffset
           polygonOffsetFactor={1}
@@ -175,7 +175,7 @@ const KhafreShaftCutawayMesh: React.FC<{ showWireframe: boolean; spiral: "interi
             color="#00F0FF"
             wireframe
             transparent
-            opacity={0.12}
+            opacity={0.18}
           />
         </mesh>
       )}
@@ -381,6 +381,30 @@ const CameraRigSync: React.FC<{
  *  Backend Z-up frame mapped like the trajectory: (x, z, −y), origin-centered. */
 const ComplexOverview: React.FC<{ apiBaseUrl?: string }> = ({ apiBaseUrl }) => {
   const gltf = useGLTF(`${apiBaseUrl ?? ""}/api/khafre/complex-glb`, true);
+  // The exporter writes COLOR_0 but no materials: assign lit, double-sided
+  // materials on load (water stays translucent). Never trust exporter defaults.
+  React.useEffect(() => {
+    gltf.scene.traverse((obj) => {
+      const mesh = obj as unknown as { isMesh?: boolean; name?: string; material?: unknown;
+        geometry?: THREE.BufferGeometry };
+      if (mesh.isMesh && mesh.geometry) {
+        // toNonIndexed expands every attribute (position + color); then facets.
+        const flat = mesh.geometry.toNonIndexed();
+        flat.computeVertexNormals();
+        mesh.geometry.dispose();
+        mesh.geometry = flat;
+        const isWater = (mesh.name ?? "").includes("water");
+        mesh.material = new THREE.MeshStandardMaterial({
+          vertexColors: true,
+          side: THREE.DoubleSide,
+          roughness: 0.85,
+          metalness: 0.05,
+          transparent: isWater,
+          opacity: isWater ? 0.5 : 1.0,
+        });
+      }
+    });
+  }, [gltf]);
   return (
     <group rotation={[-Math.PI / 2, 0, 0]}>
       <primitive object={gltf.scene} />
@@ -453,14 +477,18 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
   }, [apiBaseUrl]);
 
   // Claim pins in scene coords (exaggeration-aware; sprite positions scale).
+  // Shaft view shows only nearby pins (y ≥ −130 m); chambers/water live in
+  // the overview where they belong instead of floating in blackness.
   const pinPositions = useMemo(() => {
     const arr: { label: string; pos: [number, number, number] }[] = [];
     for (const a of claimRec?.anchors ?? []) {
       const [x, y, z] = a.position;
-      arr.push({ label: a.label, pos: [x + 40, z * exY, -(y + 20)] });
+      const pos: [number, number, number] = [x + 40, z * exY, -(y + 20)];
+      if (!overview && pos[1] < -130) continue;
+      arr.push({ label: a.label, pos });
     }
     return arr;
-  }, [claimRec, exY]);
+  }, [claimRec, exY, overview]);
 
   const flyToAnchor = (label: string) => {
     const pin = pinPositions.find((p) => p.label === label);
@@ -607,7 +635,7 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
     setExY(1);
     if (!overview) {
       setIsPlaying(false);
-      setFlyTo({ pos: [260, -140, 320], look: [0, -220, 0] });
+      setFlyTo({ pos: [420, -160, 520], look: [0, -220, 0] });
       setLookTarget([0, -220, 0]);
       setOverview(true);
     } else {
@@ -645,16 +673,19 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
             </span></div>
         </div>
         <div className="relative flex-1 w-full h-full">
-          <Canvas frameloop={active === false ? "never" : "always"}>
-            <PerspectiveCamera makeDefault fov={55} position={[55, -60, 62]} near={1} far={400} />
+          {/* flat: no tone mapping — authored tier/vertex colors render exactly (data fidelity). */}
+          <Canvas flat frameloop={active === false ? "never" : "always"}>
+            <PerspectiveCamera makeDefault fov={55} position={[55, -60, 62]} near={1} far={overview ? 2500 : 400} />
             {!firstPersonMode && (
               <OrbitControls makeDefault target={lookAt} enableDamping dampingFactor={0.08}
                 onStart={() => setFlyTo(null)} />
             )}
             <CameraRigSync activeCam={activeCam} firstPersonMode={firstPersonMode}
               flyTo={flyTo} onArrive={() => setFlyTo(null)} />
-            <ambientLight intensity={0.65} />
+            <ambientLight intensity={0.85} />
+            <hemisphereLight args={["#3a4a63", "#0a0c12", 0.5]} />
             <pointLight position={[0, activeCam.position[1], 0]} intensity={2.2} distance={45} />
+            {overview && (<directionalLight position={[300, 200, 150]} intensity={1.6} />)}
             {overview ? (
               <React.Suspense fallback={null}>
                 <ComplexOverview apiBaseUrl={apiBaseUrl} />

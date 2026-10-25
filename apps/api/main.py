@@ -819,7 +819,11 @@ async def complex_metadata() -> Dict[str, Any]:
 @app.get("/api/khafre/complex-glb")
 async def complex_glb() -> Any:
     """Full-complex overview mesh (primitives, no marching cubes): pyramid shell,
-    platform, 8 shafts, 2 chambers, water plane. Backend Z-up frame."""
+    platform, 8 shafts, 2 chambers, water plane. Backend Z-up frame.
+
+    NOTE: trimesh GLB export omits NORMAL attributes (POSITION + COLOR_0 only).
+    Consumers must compute normals (our viewer does flat faceted normals on
+    load); do not light the raw artifact directly."""
     from fastapi.responses import Response
 
     key = ("complex",)
@@ -863,7 +867,9 @@ async def complex_glb() -> Any:
 async def posterior_mesh_glb(posterior_seed: Optional[int] = None,
                              spiral_style: str = "interior_ramp") -> Any:
     """Shaft-column posterior mesh as GLB (cached per seed × spiral variant).
-    The overlay the 3D view renders beside the analytic prop."""
+
+    NOTE: trimesh GLB export omits NORMAL attributes — compute faceted normals
+    on load (as our viewer does) before lighting."""
     from fastapi.responses import Response
 
     if spiral_style not in ("interior_ramp", "exterior_coil"):

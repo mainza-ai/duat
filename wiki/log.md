@@ -1,3 +1,14 @@
+## [2026-10-25] fix | Dark overview + brightness (no restart needed)
+
+- Servers were healthy (API online/live, web 200) — content bug, not infra.
+- Root cause: trimesh GLB export omits NORMAL attributes whenever COLOR_0 is
+  present (verified byte-level); three.js then lights nothing → black meshes.
+- Fix: flat faceted normals computed on load + lit double-sided materials
+  (water stays translucent); `flat` canvases (no tone mapping — authored tier
+  colors render exactly); brighter rig (ambient 0.85, hemisphere, sun for
+  overview); shaft fill/wireframe opacity up; chamber pins filtered to overview.
+- Suite 49 passed; gate green. Endpoint docstrings warn NORMAL-less consumers.
+
 ## [2026-10-25] build | W-A…W-E world-model program ($0 spend)
 
 - True slice pipeline (jet inversion, legend masking, peak counts, viewer).

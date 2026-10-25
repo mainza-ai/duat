@@ -434,7 +434,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
           </div>
         </div>
         <div className="relative w-full cursor-crosshair overflow-hidden bg-black" style={{ aspectRatio: "16 / 9" }}>
-          <Canvas orthographic camera={{ position: [0, 0, 10] }} frameloop={active === false ? "never" : "always"} style={{ position: "absolute", inset: 0 }}>
+          <Canvas orthographic flat camera={{ position: [0, 0, 10] }} frameloop={active === false ? "never" : "always"} style={{ position: "absolute", inset: 0 }}>
             <ZoomFit />
             <EpistemicShaderQuad measuredWeight={measuredWeight} inferredWeight={inferredWeight}
               imaginedWeight={imaginedWeight} shimmerIntensity={shimmerIntensity} loupeMode={loupeMode}
