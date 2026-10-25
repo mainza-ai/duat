@@ -148,7 +148,7 @@ function useProceduralKhafreTextures(hypothesis: Hypothesis) {
       }
     }
     const makeTex = (arr: Uint8Array) => {
-      const tex = new THREE.DataTexture(arr, width, height, THREE.RGBAFormat);
+      const tex = new THREE.DataTexture(arr as Uint8Array<ArrayBuffer>, width, height, THREE.RGBAFormat);
       tex.needsUpdate = true;
       return tex;
     };
