@@ -8,13 +8,16 @@ import * as THREE from "three";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Line, PerspectiveCamera, Html } from "@react-three/drei";
 import { Compass, Video, Cpu, Play, Pause, Layers, Crosshair } from "lucide-react";
+import { renderDepth, decodeGrayscalePng, decodeLogDepthByte } from "../lib/api";
 
 export interface PosedCameraSpec {
   index: number; width: number; height: number; fx: number; fy: number; cx: number; cy: number;
   position: [number, number, number]; quaternion: [number, number, number, number];
   disagreementScore: number; isNextBestView?: boolean;
 }
-export type PointCloudColorMode = "rgb" | "dielectric" | "disagreement" | "depth";
+export type PointCloudColorMode = "relief" | "dielectric" | "depth" | "uncertainty";
+
+export interface FlyTarget { pos: [number, number, number]; look: [number, number, number]; }
 
 function generateHelicalTrajectory(numCameras = 32): PosedCameraSpec[] {
   const width = 1280, height = 720, fovDeg = 70.0;
@@ -71,7 +74,9 @@ const KhafreShaftCutawayMesh: React.FC<{ showWireframe: boolean }> = ({ showWire
   );
 };
 
-const CameraFrustumNode: React.FC<{ cam: PosedCameraSpec; isSelected: boolean; onSelect: (i: number) => void }> = ({ cam, isSelected, onSelect }) => {
+const CameraFrustumNode: React.FC<{
+  cam: PosedCameraSpec; isSelected: boolean; labelsVisible: boolean; onSelect: (i: number) => void;
+}> = ({ cam, isSelected, labelsVisible, onSelect }) => {
   const color = cam.isNextBestView ? "#FF6B1A" : isSelected ? "#00F0FF" : "#475569";
   const frustumPoints = useMemo(() => {
     const scale = isSelected ? 1.4 : 0.75, w = 0.8 * scale, h = 0.45 * scale, z = -1.2 * scale;
@@ -85,8 +90,8 @@ const CameraFrustumNode: React.FC<{ cam: PosedCameraSpec; isSelected: boolean; o
       onClick={(e) => { e.stopPropagation(); onSelect(cam.index); }}>
       <Line points={frustumPoints} color={color} lineWidth={isSelected || cam.isNextBestView ? 2.2 : 1.0} />
       <mesh><sphereGeometry args={[isSelected ? 0.28 : 0.16, 12, 12]} /><meshBasicMaterial color={color} /></mesh>
-      {(isSelected || cam.isNextBestView) && (
-        <Html distanceFactor={28} position={[0, 0.6, 0]}>
+      {(isSelected || cam.isNextBestView) && labelsVisible && (
+        <Html distanceFactor={72} position={[0, 0.6, 0]} zIndexRange={[30, 0]}>
           <div className={`px-2 py-0.5 rounded text-[10px] font-mono whitespace-nowrap border shadow-lg pointer-events-none ${
             cam.isNextBestView ? "bg-[#FF6B1A]/90 border-orange-300 text-white" : "bg-[#090A0F]/90 border-[#00F0FF] text-[#00F0FF]"}`}>
             {cam.isNextBestView ? `NBV TARGET #${cam.index + 1} (SPLIT ${Math.round(cam.disagreementScore * 100)}%)`
@@ -98,65 +103,141 @@ const CameraFrustumNode: React.FC<{ cam: PosedCameraSpec; isSelected: boolean; o
   );
 };
 
-const BackProjectedPointCloud: React.FC<{ cam: PosedCameraSpec; colorMode: PointCloudColorMode; zMin: number; zMax: number; pointSize: number }> = ({ cam, colorMode, zMin, zMax, pointSize }) => {
+interface DepthPayload {
+  depth: Uint8ClampedArray; refl: Uint8ClampedArray;
+  width: number; height: number;
+  fx: number; fy: number; cx: number; cy: number;
+  zMin: number; zMax: number;
+}
+
+/**
+ * Back-projects MEASURED planar depth (from POST /api/khafre/depth) into
+ * world space. Geometry is always measured; color layers derived from it:
+ * relief = camera-space hillshade, uncertainty = depth-gradient magnitude
+ * (occlusion proxy) — both clearly derived, never presented as Atlas output.
+ */
+const BackProjectedPointCloud: React.FC<{
+  sceneCam: PosedCameraSpec;
+  depthReq: { position: [number, number, number]; quaternion: [number, number, number, number]; shaft: [number, number] } | null;
+  apiBaseUrl?: string;
+  colorMode: PointCloudColorMode;
+  pointSize: number;
+  onSource: (s: "live" | "pending" | "error") => void;
+}> = ({ sceneCam, depthReq, apiBaseUrl, colorMode, pointSize, onSource }) => {
+  const [payload, setPayload] = useState<DepthPayload | null>(null);
+  const reqKey = depthReq ? JSON.stringify(depthReq) : "none";
+
+  useEffect(() => {
+    if (!depthReq || !apiBaseUrl) { onSource("error"); return; }
+    let cancelled = false;
+    onSource("pending");
+    renderDepth(
+      apiBaseUrl,
+      { pose: { position: depthReq.position, quaternion: depthReq.quaternion } },
+      160, 90, 7, depthReq.shaft
+    ).then(async (res) => {
+      if (cancelled) return;
+      const [d, r] = await Promise.all([
+        decodeGrayscalePng(res.log_depth_b64), decodeGrayscalePng(res.reflectivity_b64)]);
+      if (cancelled) return;
+      setPayload({ depth: d.data, refl: r.data, width: res.width, height: res.height,
+        fx: res.fx, fy: res.fy, cx: res.cx, cy: res.cy, zMin: res.z_min, zMax: res.z_max });
+      onSource("live");
+    }).catch(() => { if (!cancelled) onSource("error"); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reqKey]);
+
   const pointsGeometry = useMemo(() => {
-    const cols = 160, rows = 90;
+    const geo = new THREE.BufferGeometry();
+    if (!payload) return geo;
+    const { depth, refl, width, height, fx, fy, cx, cy, zMin, zMax } = payload;
+    const zGrid = new Float32Array(width * height);
+    for (let i = 0; i < width * height; i++) {
+      const b = depth[i * 4];
+      zGrid[i] = b > 0 ? decodeLogDepthByte(b, zMin, zMax) : 0;
+    }
     const positions: number[] = [], colors: number[] = [];
-    const camPos = new THREE.Vector3(...cam.position);
-    const camQuat = new THREE.Quaternion(...cam.quaternion);
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const u = ((c + 0.5) / cols) * cam.width, v = ((r + 0.5) / rows) * cam.height;
-        const nx = (c / cols) * 2.0 - 1.0, ny = (r / rows) * 2.0 - 1.0;
-        const radial = Math.sqrt(nx * nx + ny * ny), angle = Math.atan2(ny, nx);
-        if (radial < 0.15) continue;
-        const spiralRelief = Math.sin(8.0 / Math.max(radial, 0.15) + angle * 2.0 + cam.index * 0.25);
-        // Inverted log-depth byte: bright = near.
-        const logByte = Math.min(255, Math.max(1, Math.round((1.0 - radial * 0.65 + spiralRelief * 0.09) * 215)));
-        // OFFICIAL inverted decode: z = zMin * (zMax/zMin)^(1 - p/255)
-        const planarZ = zMin * Math.pow(zMax / zMin, 1.0 - logByte / 255.0);
-        const xCam = ((u - cam.cx) / cam.fx) * planarZ;
-        const yCam = -((v - cam.cy) / cam.fy) * planarZ;
-        const worldPt = new THREE.Vector3(xCam, yCam, -planarZ).applyQuaternion(camQuat).add(camPos);
-        positions.push(worldPt.x, worldPt.y, worldPt.z);
-        const falloff = Math.min(1.0, Math.pow(radial, 1.2) * 1.35);
-        const dielectric = 0.5 + 0.45 * spiralRelief;
-        const disagreement = Math.pow(Math.max(0, Math.cos(8.0 / radial + angle * 2.0)), 3);
-        if (colorMode === "rgb") colors.push((0.74 + 0.14 * spiralRelief) * falloff, (0.62 + 0.11 * spiralRelief) * falloff, (0.47 + 0.08 * spiralRelief) * falloff);
-        else if (colorMode === "dielectric") colors.push(dielectric, 0.45 + 0.3 * (1.0 - Math.abs(dielectric - 0.5)), 1.0 - dielectric);
-        else if (colorMode === "disagreement") colors.push(0.15 + 0.85 * disagreement, 0.05, 0.25 + 0.75 * disagreement);
-        else { const contour = Math.abs(Math.sin(planarZ * Math.PI)) > 0.9 ? 1.0 : 0.35; colors.push(0.0, 0.94 * contour, 1.0 * contour); }
+    const camPos = new THREE.Vector3(...sceneCam.position);
+    const camQuat = new THREE.Quaternion(...sceneCam.quaternion);
+    const v = new THREE.Vector3();
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        if (depth[i * 4] === 0) continue; // strict 0-mask: no surface, no point
+        const z = zGrid[i];
+        v.set(((x - cx) / fx) * z, -((y - cy) / fy) * z, -z).applyQuaternion(camQuat).add(camPos);
+        positions.push(v.x, v.y, v.z);
+        const rByte = refl[i * 4] / 255;
+        if (colorMode === "dielectric") {
+          colors.push(rByte, 0.45 + 0.3 * (1.0 - Math.abs(rByte - 0.5)), 1.0 - rByte);
+        } else if (colorMode === "depth") {
+          const c = Math.abs(Math.sin(z * Math.PI)) > 0.9 ? 1.0 : 0.35;
+          colors.push(0.0, 0.94 * c, 1.0 * c);
+        } else {
+          const zx1 = zGrid[y * width + Math.min(width - 1, x + 1)], zx0 = zGrid[y * width + Math.max(0, x - 1)];
+          const zy1 = zGrid[Math.min(height - 1, y + 1) * width + x], zy0 = zGrid[Math.max(0, y - 1) * width + x];
+          const gm = Math.hypot((zx1 - zx0) / 2, (zy1 - zy0) / 2);
+          if (colorMode === "relief") {
+            const sh = (0.35 + 0.65 / Math.sqrt(1 + gm * gm)) * Math.min(1.0, Math.pow(z / zMax + 0.4, 0.6));
+            colors.push(0.74 * sh, 0.62 * sh, 0.47 * sh);
+          } else {
+            const m = Math.min(1, gm / 3);
+            colors.push(0.15 + 0.85 * m, 0.05, 0.25 + 0.75 * m);
+          }
+        }
       }
     }
-    const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
     geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
     return geo;
-  }, [cam, colorMode, zMin, zMax]);
+  }, [payload, colorMode, sceneCam]);
+
   return (<points geometry={pointsGeometry}><pointsMaterial size={pointSize} vertexColors sizeAttenuation transparent opacity={0.92} /></points>);
 };
 
-const CameraRigSync: React.FC<{ activeCam: PosedCameraSpec; firstPersonMode: boolean }> = ({ activeCam, firstPersonMode }) => {
-  const { camera } = useThree();
+const CameraRigSync: React.FC<{
+  activeCam: PosedCameraSpec; firstPersonMode: boolean;
+  flyTo: FlyTarget | null; onArrive: () => void;
+}> = ({ activeCam, firstPersonMode, flyTo, onArrive }) => {
+  const camera = useThree((s) => s.camera);
+  const controls = useThree((s) => s.controls) as unknown as { target: THREE.Vector3; update: () => void } | null;
   const targetPos = useMemo(() => new THREE.Vector3(...activeCam.position), [activeCam]);
   const targetQuat = useMemo(() => new THREE.Quaternion(...activeCam.quaternion), [activeCam]);
+  const arriveRef = useRef(onArrive);
+  arriveRef.current = onArrive;
+  const tmpA = useMemo(() => new THREE.Vector3(), []);
+  const tmpB = useMemo(() => new THREE.Vector3(), []);
   useFrame((_, delta) => {
-    if (!firstPersonMode) return;
-    camera.position.lerp(targetPos, Math.min(1.0, delta * 8.0));
-    camera.quaternion.slerp(targetQuat, Math.min(1.0, delta * 8.0));
+    if (firstPersonMode) {
+      camera.position.lerp(targetPos, Math.min(1.0, delta * 8.0));
+      camera.quaternion.slerp(targetQuat, Math.min(1.0, delta * 8.0));
+      return;
+    }
+    if (flyTo && controls) {
+      const k = Math.min(1.0, delta * 2.5);
+      camera.position.lerp(tmpA.set(...flyTo.pos), k);
+      controls.target.lerp(tmpB.set(...flyTo.look), k);
+      controls.update();
+      if (camera.position.distanceToSquared(tmpA.set(...flyTo.pos)) < 0.04) arriveRef.current();
+    }
   });
   return null;
 };
 
-export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string }> = ({ apiBaseUrl }) => {
+export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: boolean }> = ({ apiBaseUrl, active }) => {
   const [cameras, setCameras] = useState<PosedCameraSpec[]>(() => generateHelicalTrajectory(32));
   const [trajSource, setTrajSource] = useState<"procedural" | "backend">("procedural");
   const [selectedIdx, setSelectedIdx] = useState(4);
   const [isPlaying, setIsPlaying] = useState(false);
   const [firstPersonMode, setFirstPersonMode] = useState(false);
   const [showShaftWireframe, setShowShaftWireframe] = useState(true);
-  const [colorMode, setColorMode] = useState<PointCloudColorMode>("rgb");
+  const [colorMode, setColorMode] = useState<PointCloudColorMode>("relief");
   const [pointSize, setPointSize] = useState(0.18);
+  const [backendCams, setBackendCams] = useState<any[] | null>(null);
+  const [depthSrc, setDepthSrc] = useState<"live" | "pending" | "error">("pending");
+  const [flyTo, setFlyTo] = useState<FlyTarget | null>(null);
+  const [lookAt, setLookAt] = useState<[number, number, number]>([0, -36, 0]);
 
   // Prefer the backend's helical trajectory; fall back to procedural.
   // Backend cameras are Z-up world frame around the real shaft center;
@@ -190,12 +271,41 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string }> = ({ api
             isNextBestView: i === 18,
           };
         });
-        if (mapped.length > 0) { setCameras(mapped); setTrajSource("backend"); }
+        if (mapped.length > 0) { setCameras(mapped); setBackendCams(body.targetCameras); setTrajSource("backend"); }
       })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [apiBaseUrl]);
   const activeCam = cameras[selectedIdx] || cameras[0];
+
+  // Depth request for the active camera: backend pose + shaft frame when the
+  // backend trajectory is live, otherwise the procedural scene pose with a
+  // shaft centered at the origin (the analytic renderer is shaft-relative).
+  const depthReq = useMemo(() => {
+    const back = backendCams?.[activeCam.index];
+    if (trajSource === "backend" && back) {
+      return { position: back.extrinsics.position as [number, number, number],
+        quaternion: back.extrinsics.quaternion as [number, number, number, number],
+        shaft: [-40.0, -20.0] as [number, number] };
+    }
+    return { position: activeCam.position, quaternion: activeCam.quaternion, shaft: [0.0, 0.0] as [number, number] };
+  }, [trajSource, backendCams, activeCam]);
+
+  const selectCam = (i: number, fly: boolean) => {
+    setIsPlaying(false);
+    setFlyTo(null);
+    setSelectedIdx(i);
+    const cam = cameras[i] ?? cameras[0];
+    if (fly && !firstPersonMode) {
+      const [px, , pz] = cam.position;
+      const len = Math.hypot(px, pz) || 1;
+      setFlyTo({ pos: [cam.position[0] + (px / len) * 12, cam.position[1] + 6, cam.position[2] + (pz / len) * 12],
+        look: [...cam.position] as [number, number, number] });
+      setLookAt([...cam.position] as [number, number, number]);
+    } else {
+      setLookAt([0, cam.position[1] - 4, 0]);
+    }
+  };
   useEffect(() => {
     if (!isPlaying) return;
     const timer = setInterval(() => setSelectedIdx((p) => (p + 1) % cameras.length), 450);
@@ -211,19 +321,25 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string }> = ({ api
           <div className="flex items-center gap-3 font-mono text-[11px] text-slate-400">
             <span>SHAFT #2 (WEST ROW)</span>
             <span className="text-slate-500">SRC:{trajSource === "backend" ? "API" : "LOCAL"}</span>
+            <span className="text-slate-500">PTS:{depthSrc === "live" ? "MEASURED" : depthSrc === "pending" ? "…" : "OFFLINE"}</span>
             <span className="text-[#00F0FF]">POSE #{activeCam.index + 1}/32 (DEPTH: {activeCam.position[1]}m)</span></div>
         </div>
         <div className="relative flex-1 w-full h-full">
-          <Canvas>
+          <Canvas frameloop={active === false ? "never" : "always"}>
             <PerspectiveCamera makeDefault fov={65} position={[22, -32, 26]} near={0.1} far={500} />
-            {!firstPersonMode && <OrbitControls target={[0, activeCam.position[1] - 4, 0]} enableDamping dampingFactor={0.08} />}
-            <CameraRigSync activeCam={activeCam} firstPersonMode={firstPersonMode} />
+            {!firstPersonMode && (
+              <OrbitControls makeDefault target={lookAt} enableDamping dampingFactor={0.08}
+                onStart={() => setFlyTo(null)} />
+            )}
+            <CameraRigSync activeCam={activeCam} firstPersonMode={firstPersonMode}
+              flyTo={flyTo} onArrive={() => setFlyTo(null)} />
             <ambientLight intensity={0.65} />
             <pointLight position={[0, activeCam.position[1], 0]} intensity={2.2} distance={45} />
             <KhafreShaftCutawayMesh showWireframe={showShaftWireframe} />
             <Line points={splinePoints} color="#00F0FF" lineWidth={1.5} transparent opacity={0.45} />
-            {cameras.map((cam) => (<CameraFrustumNode key={cam.index} cam={cam} isSelected={cam.index === selectedIdx} onSelect={setSelectedIdx} />))}
-            <BackProjectedPointCloud cam={activeCam} colorMode={colorMode} zMin={0.5} zMax={28.0} pointSize={pointSize} />
+            {cameras.map((cam) => (<CameraFrustumNode key={cam.index} cam={cam} isSelected={cam.index === selectedIdx} labelsVisible={flyTo === null} onSelect={(i) => selectCam(i, false)} />))}
+            <BackProjectedPointCloud sceneCam={activeCam} depthReq={depthReq} apiBaseUrl={apiBaseUrl}
+              colorMode={colorMode} pointSize={pointSize} onSource={setDepthSrc} />
           </Canvas>
         </div>
         <div className="z-10 flex flex-wrap items-center gap-4 px-4 py-3 bg-[#090A0F]/95 border-t border-slate-800 text-xs">
@@ -234,10 +350,10 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string }> = ({ api
           <div className="flex-1 flex items-center gap-3">
             <span className="font-mono text-slate-400 whitespace-nowrap">CAM #{selectedIdx + 1}</span>
             <input type="range" min={0} max={cameras.length - 1} value={selectedIdx}
-              onChange={(e) => { setIsPlaying(false); setSelectedIdx(parseInt(e.target.value, 10)); }} className="w-full accent-[#00F0FF]" />
+              onChange={(e) => selectCam(parseInt(e.target.value, 10), false)} className="w-full accent-[#00F0FF]" />
             <span className="font-mono text-[#00F0FF] whitespace-nowrap">Z = {activeCam.position[1]}m</span></div>
-          <button onClick={() => { setIsPlaying(false); setSelectedIdx(18); }}
-            className="px-2.5 py-1.5 rounded border border-[#FF6B1A] bg-[#FF6B1A]/15 text-[#FF6B1A] font-mono text-[11px] hover:bg-[#FF6B1A]/25 transition">Jump to NBV (#19)</button>
+          <button onClick={() => selectCam(18, true)}
+            className="px-2.5 py-1.5 rounded border border-[#FF6B1A] bg-[#FF6B1A]/15 text-[#FF6B1A] font-mono text-[11px] hover:bg-[#FF6B1A]/25 transition">Jump to NBV (#19){flyTo ? " · flying…" : ""}</button>
         </div>
       </div>
       <div className="w-full lg:w-96 bg-[#0D0F17] border-l border-slate-800 p-5 flex flex-col gap-6">
@@ -258,8 +374,8 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string }> = ({ api
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
             <Layers className="w-4 h-4 text-[#FFB800]" /><span>Back-Projected Point Cloud Layer</span></div>
           <div className="grid grid-cols-2 gap-2 text-xs">
-            {[["rgb", "Tier 3: Atlas RGB"], ["dielectric", "Tier 2: Dielectric"],
-              ["depth", "Tier 1: Iso-Depth"], ["disagreement", "Ensemble Split"]].map(([id, label]) => (
+            {[["relief", "Hillshade Relief"], ["dielectric", "Tier 2: Dielectric"],
+              ["depth", "Tier 1: Iso-Depth"], ["uncertainty", "Occlusion Proxy"]].map(([id, label]) => (
               <button key={id} onClick={() => setColorMode(id as PointCloudColorMode)}
                 className={`px-3 py-2 rounded-md border text-left transition ${colorMode === id
                   ? "bg-slate-800 border-[#FFB800] text-white font-medium" : "bg-[#090A0F] border-slate-800 text-slate-400 hover:border-slate-700"}`}>{label}</button>
@@ -292,7 +408,7 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string }> = ({ api
           <div className="flex items-center gap-2 font-semibold text-emerald-400 mb-1">
             <Cpu className="w-4 h-4" /><span>Chained Descent Anchor Ready</span></div>
           <p className="text-slate-300 leading-relaxed text-[11px]">
-            Camera #32 (<span className="font-mono text-white">Z = -100.0m</span>) can be promoted to a{" "}
+            Camera #32 (<span className="font-mono text-white">Z = {cameras[cameras.length - 1]?.position[1].toFixed(1)}m</span>) can be promoted to a{" "}
             <span className="font-mono text-emerald-300">sourceFrame</span> + <span className="font-mono text-emerald-300">contextFrame</span>{" "}
             to launch the next 32-camera batch into the 80m basal chamber.
           </p>

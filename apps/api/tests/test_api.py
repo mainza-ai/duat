@@ -29,6 +29,19 @@ def test_trajectory_shape_and_frame_params():
     assert cam["extrinsics"]["coordinateSystem"] == "rub"
 
 
+def test_depth_render_endpoint_scaled_intrinsics():
+    r = client.post("/api/khafre/depth", json={
+        "camera": {"width": 1280, "height": 720, "fov_deg": 70.0,
+                   "pose": {"position": [-38.5, -20.0, -45.0], "quaternion": [0, 0, 0, 1]}},
+        "out_width": 160, "out_height": 90})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["width"], body["height"]) == (160, 90)
+    assert abs(body["fx"] - 914.29 * 160 / 1280) < 1.0
+    assert body["log_depth_b64"].startswith("data:image/png;base64,")
+    assert 0.0 < body["valid_fraction"] < 1.0
+
+
 def test_degradation_sweep_ladder():
     r = client.get("/api/khafre/degradation")
     assert r.status_code == 200, r.text

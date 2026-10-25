@@ -108,6 +108,32 @@ class NextBestViewRecommendation(BaseModel):
     rationale: str
 
 
+class DepthRenderRequest(BaseModel):
+    """Render Tier-1/Tier-2 layers for an arbitrary pinhole pose (backend frame)."""
+
+    camera: PinholeCameraSpec = Field(default_factory=PinholeCameraSpec)
+    z_min: float = 0.5
+    z_max: Optional[float] = None
+    out_width: int = Field(default=160, ge=32, le=640)
+    out_height: int = Field(default=90, ge=18, le=360)
+    seed: int = 7
+    shaft_center_xy: List[float] = Field(default_factory=lambda: [-40.0, -20.0])
+
+
+class DepthRenderResponse(BaseModel):
+    log_depth_b64: str
+    reflectivity_b64: str
+    width: int
+    height: int
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+    z_min: float
+    z_max: float
+    valid_fraction: float
+
+
 class EnsembleExploreResponse(BaseModel):
     provenance_sha256: str
     timestamp_utc: float
@@ -291,6 +317,32 @@ async def degradation_sweep() -> Dict[str, Any]:
                        "rms_displacement_m": round(rms, 4)})
     return {"base_vertices": int(len(base.vertices)), "base_faces": int(len(base.faces)),
             "levels": levels}
+
+
+@app.post("/api/khafre/depth", response_model=DepthRenderResponse)
+async def render_depth(req: DepthRenderRequest) -> DepthRenderResponse:
+    """Render official-spec inverted log-depth + dielectric proxy for any pose.
+
+    Intrinsics are scaled from the camera's native resolution to the output
+    grid so the pinhole geometry stays exact at any downsample factor.
+    """
+    from .pipeline.prompts import INSTRUMENT_RIGS
+
+    z_max = req.z_max if req.z_max is not None else INSTRUMENT_RIGS["drop_flare"][1]
+    sx = req.out_width / req.camera.width
+    sy = req.out_height / req.camera.height
+    fx, fy = req.camera.fx * sx, req.camera.fx * sy
+    cx, cy = (req.camera.width / 2.0) * sx, (req.camera.height / 2.0) * sy
+    log_u8, refl_u8, valid = render_shaft_planar_depth_and_reflectivity(
+        cam_origin_xyz=tuple(req.camera.pose.position),
+        width=req.out_width, height=req.out_height, fx=fx, fy=fy, cx=cx, cy=cy,
+        z_min=req.z_min, z_max=z_max, shaft_center_xy=tuple(req.shaft_center_xy),
+        noise_sigma_m=0.0, seed=req.seed)
+    return DepthRenderResponse(
+        log_depth_b64=_encode_png_b64(log_u8), reflectivity_b64=_encode_png_b64(refl_u8),
+        width=req.out_width, height=req.out_height, fx=fx, fy=fy, cx=cx, cy=cy,
+        z_min=req.z_min, z_max=z_max,
+        valid_fraction=round(float(np.count_nonzero(valid) / valid.size), 4))
 
 
 @app.post("/api/khafre/mesh")

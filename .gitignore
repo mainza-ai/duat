@@ -10,3 +10,4 @@ apps/web/vite.config.localtest.ts
 data/*.exr
 data/*.png
 .DS_Store
+shots/

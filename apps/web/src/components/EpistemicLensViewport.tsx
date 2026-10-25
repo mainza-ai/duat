@@ -5,7 +5,7 @@
  */
 import React, { useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { Canvas, useFrame, ThreeEvent } from "@react-three/fiber";
+import { Canvas, useFrame, useThree, ThreeEvent } from "@react-three/fiber";
 import { Layers, Eye, Sparkles, Radar, Sliders, Crosshair, ShieldAlert } from "lucide-react";
 import { postEnsemble } from "../lib/api";
 
@@ -166,8 +166,20 @@ interface EpistemicQuadProps {
   onPinPixel: (t: PixelTelemetry) => void;
 }
 
-const EpistemicShaderQuad: React.FC<EpistemicQuadProps> = (props) => {
-  const { measuredWeight, inferredWeight, imaginedWeight, shimmerIntensity, loupeMode, hypothesis, onInspectPixel, onPinPixel, voxelSize, sensorNoise } = props;
+/** Fit the 16x9 epistemic quad to any container: zoom = min(w/16, h/9). */
+const ZoomFit: React.FC = () => {
+  const camera = useThree((s) => s.camera);
+  const size = useThree((s) => s.size);
+  React.useEffect(() => {
+    if (camera instanceof THREE.OrthographicCamera) {
+      camera.zoom = Math.min(size.width / 16, size.height / 9);
+      camera.updateProjectionMatrix();
+    }
+  }, [camera, size]);
+  return null;
+};
+
+const EpistemicShaderQuad: React.FC<EpistemicQuadProps> = (props) => {  const { measuredWeight, inferredWeight, imaginedWeight, shimmerIntensity, loupeMode, hypothesis, onInspectPixel, onPinPixel, voxelSize, sensorNoise } = props;
   const matRef = useRef<THREE.ShaderMaterial>(null);
   const lastTelemetry = useRef<PixelTelemetry>({ u: 640, v: 360, planarZ: 14.2, reflectivity: 0.72, disagreement: 0.34 });
   const fallback = useProceduralKhafreTextures(hypothesis);
@@ -237,7 +249,7 @@ const EpistemicShaderQuad: React.FC<EpistemicQuadProps> = (props) => {
   );
 };
 
-export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string }> = ({ apiBaseUrl }) => {
+export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: boolean }> = ({ apiBaseUrl, active }) => {
   const [measuredWeight, setMeasuredWeight] = useState(0.15);
   const [inferredWeight, setInferredWeight] = useState(0.10);
   const [imaginedWeight, setImaginedWeight] = useState(0.75);
@@ -283,8 +295,9 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string }> = ({ apiBas
             <span className="text-[#00F0FF]">CAM #04/32 (1280×720 PINHOLE)</span>
           </div>
         </div>
-        <div className="relative flex-1 w-full h-full cursor-crosshair">
-          <Canvas orthographic camera={{ zoom: 45, position: [0, 0, 10] }}>
+        <div className="relative w-full cursor-crosshair overflow-hidden bg-black" style={{ aspectRatio: "16 / 9" }}>
+          <Canvas orthographic camera={{ position: [0, 0, 10] }} frameloop={active === false ? "never" : "always"} style={{ position: "absolute", inset: 0 }}>
+            <ZoomFit />
             <EpistemicShaderQuad measuredWeight={measuredWeight} inferredWeight={inferredWeight}
               imaginedWeight={imaginedWeight} shimmerIntensity={shimmerIntensity} loupeMode={loupeMode}
               hypothesis={hypothesis} apiBaseUrl={apiBaseUrl} useLive={useLive}

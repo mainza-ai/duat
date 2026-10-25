@@ -154,6 +154,45 @@ function wrapText(g: CanvasRenderingContext2D, text: string, x: number, y: numbe
   }
   if (count < 3) g.fillText(line, x, yy);
 }
+export interface DepthRenderResponse {
+  log_depth_b64: string;
+  reflectivity_b64: string;
+  width: number; height: number;
+  fx: number; fy: number; cx: number; cy: number;
+  z_min: number; z_max: number;
+  valid_fraction: number;
+}
+
+export async function renderDepth(
+  baseUrl: string,
+  camera: EnsembleRequest["camera"],
+  outW = 160, outH = 90, seed = 7,
+  shaftCenter: [number, number] = [-40, -20]
+): Promise<DepthRenderResponse> {
+  const res = await fetch(`${baseUrl}/api/khafre/depth`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ camera, out_width: outW, out_height: outH, seed, shaft_center_xy: shaftCenter }),
+  });
+  if (!res.ok) throw new Error(`depth render failed: ${res.status}`);
+  return res.json();
+}
+
+/** Decode a data-URL grayscale PNG into bytes via an offscreen canvas. */
+export async function decodeGrayscalePng(uri: string): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = reject;
+    im.src = uri;
+  });
+  const cv = document.createElement("canvas");
+  cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+  const g = cv.getContext("2d", { willReadFrequently: true })!;
+  g.drawImage(img, 0, 0);
+  const { data, width, height } = g.getImageData(0, 0, cv.width, cv.height);
+  return { data, width, height };
+}
 /** Official inverted log-depth decode (255 = zMin, 0 = empty). Mirrors backend + GLSL. */
 export function decodeLogDepthByte(p: number, zMin: number, zMax: number): number {
   if (p <= 0) return 0;

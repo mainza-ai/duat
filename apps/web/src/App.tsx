@@ -5,6 +5,7 @@ import React, { useState, useEffect } from "react";
 import { Layers, Compass, Server, ShieldCheck, Download } from "lucide-react";
 import { EpistemicLensViewport } from "./components/EpistemicLensViewport";
 import { HelicalDescentNavigator } from "./components/HelicalDescentNavigator";
+import { ViewportErrorBoundary } from "./components/ErrorBoundary";
 import { exportComparisonCard } from "./lib/api";
 
 export function App() {
@@ -80,24 +81,27 @@ export function App() {
             <Download className="w-3.5 h-3.5 text-[#00F0FF]" /><span>{exporting ? "Exporting…" : "Export Card"}</span></button>
         </div>
       </header>
+      {/* Both viewports stay mounted (hidden tab renders nothing) so switching
+          tabs never unmounts a live WebGL root mid-frame. */}
       <main className="flex-1 p-6 max-w-[1750px] w-full mx-auto flex flex-col">
-        {activeTab === "observatory" ? (
-          <div className="flex-1 flex flex-col gap-4">
-            <div className="flex items-center justify-between">
-              <div className="text-xs text-slate-400 font-mono">FLAGSHIP DATASET: <span className="text-white">Khafre Pyramid Subterranean SAR Anomalies (8 Shafts + Basal Chambers)</span></div>
-              <div className="text-xs text-[#FF6B1A] font-mono flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" /><span>Zero-Vividness-Bias Provenance Layer Active</span></div>
-            </div>
-            <EpistemicLensViewport apiBaseUrl={apiBaseUrl} />
+        <div className="flex-1 flex-col gap-4" style={{ display: activeTab === "observatory" ? "flex" : "none" }}>
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-slate-400 font-mono">FLAGSHIP DATASET: <span className="text-white">Khafre Pyramid Subterranean SAR Anomalies (8 Shafts + Basal Chambers)</span></div>
+            <div className="text-xs text-[#FF6B1A] font-mono flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" /><span>Zero-Vividness-Bias Provenance Layer Active</span></div>
           </div>
-        ) : (
-          <div className="flex-1 flex flex-col gap-4">
-            <div className="flex items-center justify-between">
-              <div className="text-xs text-slate-400 font-mono">TRAJECTORY: <span className="text-white">32 Descending Pinhole Cameras along Shaft #2 Helical Wall</span></div>
-              <div className="text-xs text-[#00F0FF] font-mono">Live Planar-Depth RGBD Back-Projection Active</div>
-            </div>
-            <HelicalDescentNavigator apiBaseUrl={apiBaseUrl} />
+          <ViewportErrorBoundary name="Epistemic Lens">
+            <EpistemicLensViewport apiBaseUrl={apiBaseUrl} active={activeTab === "observatory"} />
+          </ViewportErrorBoundary>
+        </div>
+        <div className="flex-1 flex-col gap-4" style={{ display: activeTab === "helical" ? "flex" : "none" }}>
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-slate-400 font-mono">TRAJECTORY: <span className="text-white">32 Descending Pinhole Cameras along Shaft #2 Helical Wall</span></div>
+            <div className="text-xs text-[#00F0FF] font-mono">Live Planar-Depth RGBD Back-Projection Active</div>
           </div>
-        )}
+          <ViewportErrorBoundary name="Helical Descent">
+            <HelicalDescentNavigator apiBaseUrl={apiBaseUrl} active={activeTab === "helical"} />
+          </ViewportErrorBoundary>
+        </div>
       </main>
       <footer className="px-6 py-3 bg-[#090A0F] border-t border-slate-800 text-center text-xs text-slate-500 font-mono">
         Project Milimo Duat // Built for open-ended wonder, epistemic rigor, and World Labs Marble 2 / Atlas.
