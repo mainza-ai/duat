@@ -525,24 +525,28 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
             Camera #32 (<span className="font-mono text-white">Z = {cameras[cameras.length - 1]?.position[1].toFixed(1)}m</span>) anchors
             the next batch. Runs {chainBatches} batches × 2 targets as a resumable, cancellable job.
           </p>
-          <div className="flex items-center gap-2 mb-2">
+          <div className="mb-1 text-[11px] font-medium text-slate-400">Hypothesis prior</div>
+          <div className="grid grid-cols-4 gap-1.5 mb-3">
             {(["megalithic", "karst", "artifact", "bedrock_null"] as const).map((h) => (
               <button key={h} onClick={() => setChainHyp(h)}
-                className={`px-2 py-1 rounded border font-mono text-[10px] transition ${chainHyp === h
-                  ? "bg-slate-800 border-[#34D399] text-white" : "bg-[#090A0F] border-slate-800 text-slate-400"}`}>
+                className={`px-2 py-1.5 rounded-md border font-mono text-[10px] transition ${chainHyp === h
+                  ? "bg-slate-800 border-[#34D399] text-white font-medium" : "bg-[#090A0F] border-slate-800 text-slate-400 hover:border-slate-700"}`}>
                 {h === "bedrock_null" ? "null" : h.slice(0, 4)}</button>
             ))}
-            <span className="font-mono text-[10px] text-slate-400 ml-auto">batches</span>
+          </div>
+          <div className="mb-3">
+            <div className="flex justify-between text-[11px] mb-1">
+              <span className="text-slate-400">Batches (× 2 targets)</span>
+              <span className="font-mono text-white">{chainBatches}</span></div>
             <input type="range" min={1} max={6} step={1} value={chainBatches}
-              onChange={(e) => setChainBatches(parseInt(e.target.value, 10))} className="w-20 accent-[#34D399]" />
-            <span className="font-mono text-[10px] text-white">{chainBatches}</span>
+              onChange={(e) => setChainBatches(parseInt(e.target.value, 10))} className="w-full accent-[#34D399]" />
           </div>
           {!armingChain ? (
-            <div className="flex gap-2">
+            <div className="grid grid-cols-2 gap-2">
               <button onClick={() => void runChain(false)}
-                className="flex-1 px-2 py-1.5 rounded bg-slate-800 border border-slate-700 text-[11px] font-medium hover:bg-slate-700 transition">Run simulated</button>
+                className="px-3 py-2 rounded-md bg-slate-800 border border-slate-700 text-xs font-medium hover:bg-slate-700 transition">Run simulated</button>
               <button onClick={() => setArmingChain(true)}
-                className="flex-1 px-2 py-1.5 rounded border border-[#FFB800]/60 text-[#FFB800] text-[11px] font-medium hover:bg-[#FFB800]/10 transition">Live chain</button>
+                className="px-3 py-2 rounded-md border border-[#FFB800]/60 text-[#FFB800] text-xs font-medium hover:bg-[#FFB800]/10 transition">Live chain</button>
             </div>
           ) : (
             <div className="p-2 rounded border border-[#FFB800]/60 bg-[#FFB800]/10 text-[11px]">
