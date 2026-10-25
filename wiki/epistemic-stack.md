@@ -21,7 +21,7 @@
 
 - `atlasChisel` RGB conditioned on depth + pose + lighting rig prompt.
 - Always shown with Consensus View (median across seeds/posteriors/prompts)
-  and Disagreement Heatmap (normalized variance → signal-crimson `#FF2D55`
+  and Disagreement Heatmap (normalized variance → signal-orange `#FF6B1A`
   shimmer). Clicking high-disagreement regions opens a per-seed inspector.
 - Mandatory badge: "MODEL PREDICTION — CONDITIONED ON SENSOR GEOMETRY".
 

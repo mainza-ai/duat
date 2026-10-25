@@ -8,14 +8,17 @@ import { HelicalDescentNavigator } from "./components/HelicalDescentNavigator";
 
 export function App() {
   const [activeTab, setActiveTab] = useState<"observatory" | "helical">("observatory");
-  const [apiStatus, setApiStatus] = useState<"checking" | "online" | "offline">("checking");
+  const [apiStatus, setApiStatus] = useState<"checking" | "live" | "mock" | "offline">("checking");
   const [apiBaseUrl] = useState<string>("http://127.0.0.1:8001"); // TEMP local-test: :8000 occupied
 
   useEffect(() => {
     const checkApi = async () => {
       try {
         const res = await fetch(`${apiBaseUrl}/api/health`);
-        setApiStatus(res.ok ? "online" : "offline");
+        if (!res.ok) { setApiStatus("offline"); return; }
+        // The backend reports its true Atlas mode — surface it instead of hedging.
+        const health = await res.json();
+        setApiStatus(health.worldlabs_mock_mode ? "mock" : "live");
       } catch { setApiStatus("offline"); }
     };
     checkApi();
@@ -44,11 +47,14 @@ export function App() {
         </div>
         <div className="flex items-center gap-3">
           <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-mono ${
-            apiStatus === "online" ? "bg-cyan-950/30 border-cyan-500/40 text-[#00F0FF]"
-            : apiStatus === "checking" ? "bg-amber-950/30 border-amber-500/40 text-[#FFB800]"
-            : "bg-rose-950/30 border-rose-500/40 text-rose-400"}`}>
+            apiStatus === "live" ? "bg-cyan-950/30 border-cyan-500/40 text-[#00F0FF]"
+            : apiStatus === "mock" ? "bg-slate-800/80 border-slate-600 text-slate-200"
+            : apiStatus === "checking" ? "bg-slate-800/50 border-slate-700 text-slate-400"
+            : "bg-[#FF2D55]/10 border-[#FF2D55]/40 text-[#FF2D55]"}`}>
             <Server className="w-3.5 h-3.5" />
-            <span>API: {apiStatus === "online" ? "Connected (Mock/Live)" : apiStatus === "checking" ? "Connecting..." : "Offline (Local Fallback)"}</span>
+            <span>API: {apiStatus === "live" ? "Live · Atlas"
+              : apiStatus === "mock" ? "Mock · simulated"
+              : apiStatus === "checking" ? "Connecting…" : "Offline"}</span>
           </div>
           <button onClick={() => alert("Cryptographic Provenance Manifest & SHA-256 Hashes exported.")}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 text-xs font-medium text-slate-200 hover:bg-slate-700 transition shadow">
@@ -60,7 +66,7 @@ export function App() {
           <div className="flex-1 flex flex-col gap-4">
             <div className="flex items-center justify-between">
               <div className="text-xs text-slate-400 font-mono">FLAGSHIP DATASET: <span className="text-white">Khafre Pyramid Subterranean SAR Anomalies (8 Shafts + Basal Chambers)</span></div>
-              <div className="text-xs text-[#FF2D55] font-mono flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" /><span>Zero-Vividness-Bias Provenance Layer Active</span></div>
+              <div className="text-xs text-[#FF6B1A] font-mono flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" /><span>Zero-Vividness-Bias Provenance Layer Active</span></div>
             </div>
             <EpistemicLensViewport apiBaseUrl={apiBaseUrl} />
           </div>
