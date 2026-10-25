@@ -159,21 +159,37 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string }> = ({ api
   const [pointSize, setPointSize] = useState(0.18);
 
   // Prefer the backend's helical trajectory; fall back to procedural.
+  // Backend cameras are Z-up world frame around the real shaft center;
+  // the scene is Y-up around the origin: p_scene = R_x(-90°) * (p - center).
   useEffect(() => {
     if (!apiBaseUrl) return;
     let cancelled = false;
-    fetch(`${apiBaseUrl}/api/khafre/trajectory?num_cameras=32`)
+    // Match the demo shaft prop (110 m tall, top at y = -5).
+    fetch(`${apiBaseUrl}/api/khafre/trajectory?num_cameras=32&z_start_m=-15&z_end_m=-105&orbit_radius_m=2.4`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error("trajectory"))))
       .then((body) => {
         if (cancelled || !Array.isArray(body.targetCameras)) return;
-        const mapped: PosedCameraSpec[] = body.targetCameras.map((c: any, i: number) => ({
-          index: i,
-          width: c.intrinsics.width, height: c.intrinsics.height,
-          fx: c.intrinsics.fx, fy: c.intrinsics.fy, cx: c.intrinsics.cx, cy: c.intrinsics.cy,
-          position: c.extrinsics.position, quaternion: c.extrinsics.quaternion,
-          disagreementScore: Number((0.22 + 0.68 * Math.exp(-Math.pow((i - 18) / 3.5, 2))).toFixed(2)),
-          isNextBestView: i === 18,
-        }));
+        const sc: [number, number] = body.shaft_center_xy ?? [-40, -20];
+        // R_x(-90°) as XYZW: maps (x, y, z)_zup -> (x, z, -y)_yup.
+        const qm: [number, number, number, number] = [-0.70710678, 0, 0, 0.70710678];
+        const qmul = (a: number[], b: number[]): [number, number, number, number] => [
+          a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+          a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+          a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+          a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+        ];
+        const mapped: PosedCameraSpec[] = body.targetCameras.map((c: any, i: number) => {
+          const p = c.extrinsics.position as [number, number, number];
+          return {
+            index: i,
+            width: c.intrinsics.width, height: c.intrinsics.height,
+            fx: c.intrinsics.fx, fy: c.intrinsics.fy, cx: c.intrinsics.cx, cy: c.intrinsics.cy,
+            position: [p[0] - sc[0], p[2], -(p[1] - sc[1])] as [number, number, number],
+            quaternion: qmul(qm, c.extrinsics.quaternion),
+            disagreementScore: Number((0.22 + 0.68 * Math.exp(-Math.pow((i - 18) / 3.5, 2))).toFixed(2)),
+            isNextBestView: i === 18,
+          };
+        });
         if (mapped.length > 0) { setCameras(mapped); setTrajSource("backend"); }
       })
       .catch(() => {});

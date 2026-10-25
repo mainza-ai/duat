@@ -11,7 +11,7 @@ export function App() {
   const [activeTab, setActiveTab] = useState<"observatory" | "helical">("observatory");
   const [apiStatus, setApiStatus] = useState<"checking" | "live" | "mock" | "offline">("checking");
   const [exporting, setExporting] = useState(false);
-  const [apiBaseUrl] = useState<string>("http://localhost:8000");
+  const [apiBaseUrl] = useState<string>("http://127.0.0.1:8001"); // LOCAL-ONLY (untracked): :8000 occupied on this machine
 
   useEffect(() => {
     const checkApi = async () => {

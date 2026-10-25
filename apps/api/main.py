@@ -146,12 +146,18 @@ async def health_check() -> Dict[str, Any]:
 
 
 @app.get("/api/khafre/trajectory")
-async def get_trajectory(num_cameras: int = 32) -> Dict[str, Any]:
+async def get_trajectory(num_cameras: int = 32, z_start_m: float = -30.0,
+                         z_end_m: float = -180.0, orbit_radius_m: float = 2.2) -> Dict[str, Any]:
     bundle = _get_bundle()
+    shaft_center_xy = (-40.0, -20.0)
     return {"bounds_min_m": bundle.metadata.bounds_min_m,
             "bounds_max_m": bundle.metadata.bounds_max_m,
             "voxel_size_m": bundle.metadata.voxel_size_m,
-            "targetCameras": VOLUME_ENGINE.generate_helical_descent_cameras(num_cameras=num_cameras)}
+            "shaft_center_xy": list(shaft_center_xy),
+            "coordinate_frame": "z_up",
+            "targetCameras": VOLUME_ENGINE.generate_helical_descent_cameras(
+                num_cameras=num_cameras, shaft_center_xy=shaft_center_xy,
+                z_start_m=z_start_m, z_end_m=z_end_m, orbit_radius_m=orbit_radius_m)}
 
 
 @app.post("/api/chisel/ensemble", response_model=EnsembleExploreResponse)

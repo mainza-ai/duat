@@ -12,7 +12,14 @@ def test_health():
     assert r.json()["project"] == "Milimo Duat"
 
 
-def test_trajectory_shape():
+def test_trajectory_shape_and_frame_params():
+    r = client.get("/api/khafre/trajectory?num_cameras=4&z_start_m=-15&z_end_m=-105&orbit_radius_m=2.4")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["coordinate_frame"] == "z_up"
+    assert body["shaft_center_xy"] == [-40.0, -20.0]
+    zs = [c["extrinsics"]["position"][2] for c in body["targetCameras"]]
+    assert min(zs) >= -105.01 and max(zs) <= -14.99
     r = client.get("/api/khafre/trajectory?num_cameras=4")
     assert r.status_code == 200
     body = r.json()
