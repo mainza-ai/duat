@@ -48,7 +48,7 @@ duat/
 
 - `POST /api/v2/tasks:atlasChisel` body: `{contextFrames[], sourceFrames[],
   targetCameras[1..32], prompt, enhancePrompt=true, voxelSize?,
-  voxelGridOrientation?, modelParameters{seed?, returnDepth?}}`.
+  voxelGridOrientation?, returnDepth?, modelParameters{seed?, numSteps?}}`.
 - Camera: `{intrinsics:{fx,fy,cx,cy,width:1280,height:720},
   extrinsics:{position:[x,y,z], quaternion:[x,y,z,w] XYZW, coordinateSystem:'rub'}}`.
 - Depth: `depth:{logDepthAsset:{assetId}, zMin, zMax}` (inverted PNG) or
@@ -61,10 +61,11 @@ duat/
 CameraPose: {position: [x,y,z], quaternion: [x,y,z,w]}
 PinholeCameraSpec: {width=1280, height=720, fov_deg=70,
   coordinate_system='rub', pose} + fx property + to_atlas_dict()
-EnsembleExploreRequest: {camera, hypothesis: megalithic|karst|artifact,
+EnsembleExploreRequest: {camera, dataset: khafre|nfc|big-void|uploaded_mesh,
+  hypothesis: megalithic|karst|artifact|bedrock_null, force_geometry_on_null=False,
   instrument_rig: borescope_led|drop_flare|structured_laser,
   seeds=[7,42,108,256], voxel_size=0.25, sensor_noise_sigma_m=0.18,
-  z_min=0.5, z_max?=rig_default, mock_mode?}
+  z_min=0.5, z_max?=rig_default, mode: mock|live}
 EnsembleExploreResponse: {provenance_sha256, timestamp_utc, prompt_used,
   z_min, z_max, voxel_size, empty_void_pixel_ratio, mean_ensemble_disagreement,
   layers{measured_log_depth_b64, inferred_reflectivity_b64,

@@ -7,8 +7,15 @@ import React, { useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { Canvas, useFrame, useThree, ThreeEvent } from "@react-three/fiber";
 import { Layers, Eye, Sparkles, Radar, Sliders, Crosshair, ShieldAlert } from "lucide-react";
-import { postEnsemble, createJob, getJob, cancelJob, listJobs, fetchPricing, estimateCost, exportComparisonCard, decodeGrayscalePng, decodeLogDepthByte } from "../lib/api";
-import type { EnsembleRequest, EnsembleResponse, JobRecord, PricingInfo } from "../lib/api";
+import {
+  postEnsemble, createJob, getJob, cancelJob, listJobs, fetchPricing, estimateCost,
+  exportComparisonCard, decodeGrayscalePng, decodeLogDepthByte, fetchDegradation,
+  uploadMesh, apiHeaders,
+} from "../lib/api";
+import type {
+  EnsembleRequest, EnsembleResponse, JobRecord, PricingInfo, DatasetKind,
+  InstrumentRig, DegradationResponse, MeshUploadResponse,
+} from "../lib/api";
 
 const VERTEX_SHADER = /*glsl*/ `
 varying vec2 vUv;
@@ -75,10 +82,12 @@ void main() {
   float disagreement = texture2D(uDisagreementTexture, vUv).r;
   vec3 tier1 = renderTier1Measured(vUv, planarZ, isEmpty);
   vec3 tier2 = renderTier2Inferred(refl, isEmpty);
-  vec3 tier3 = isEmpty ? COLOR_OBSIDIAN : rgbImagined;
+  // If isEmpty is true (0-masked depth), show rgbImagined if non-black (e.g. bedrock_null unconditioned run)
+  bool hasRgb = dot(rgbImagined, vec3(1.0)) > 0.01;
+  vec3 tier3 = (isEmpty && !hasRgb) ? COLOR_OBSIDIAN : rgbImagined;
   float totalW = max(uMeasuredWeight + uInferredWeight + uImaginedWeight, 0.001);
   vec3 composite = (tier1 * uMeasuredWeight + tier2 * uInferredWeight + tier3 * uImaginedWeight) / totalW;
-  if (!isEmpty && uShimmerIntensity > 0.01 && disagreement > 0.18) {
+  if ((!isEmpty || hasRgb) && uShimmerIntensity > 0.01 && disagreement > 0.18) {
     float pulse = 0.5 + 0.5 * sin(uTime * 5.0 + (vUv.x * 45.0) + (vUv.y * 45.0));
     float wave = smoothstep(0.18, 0.85, disagreement);
     vec3 shimmerColor = mix(COLOR_SHIMMER, COLOR_INFERRED, pulse * 0.4);
@@ -222,12 +231,21 @@ const EpistemicShaderQuad: React.FC<EpistemicQuadProps> = (props) => {  const { 
   // Backend layers arrive as data-URI PNGs (mock or live job output); otherwise procedural fallback.
   React.useEffect(() => {
     if (!layers) { setLive(null); return; }
-    let cancelled = false;
     const loader = new THREE.TextureLoader();
     loader.setCrossOrigin("anonymous");
-    const tx = (uri: string) => loader.load(uri);
-    setLive({ rgb: tx(layers.rgb), depth: tx(layers.depth), refl: tx(layers.refl), dis: tx(layers.dis) });
-    return () => { cancelled = true; };
+    const loaded = {
+      rgb: loader.load(layers.rgb),
+      depth: loader.load(layers.depth),
+      refl: loader.load(layers.refl),
+      dis: loader.load(layers.dis),
+    };
+    setLive(loaded);
+    return () => {
+      loaded.rgb.dispose();
+      loaded.depth.dispose();
+      loaded.refl.dispose();
+      loaded.dis.dispose();
+    };
   }, [layers]);
 
   const tex = live ?? { rgb: fallback.rgbTex, depth: fallback.depthTex, refl: fallback.reflTex, dis: fallback.disTex };
@@ -250,6 +268,8 @@ const EpistemicShaderQuad: React.FC<EpistemicQuadProps> = (props) => {  const { 
     u.uMeasuredWeight.value = measuredWeight; u.uInferredWeight.value = inferredWeight;
     u.uImaginedWeight.value = imaginedWeight; u.uShimmerIntensity.value = shimmerIntensity;
     u.uLoupeMode.value = loupeMode; u.uLoupeRadius.value = loupeRadius;
+    u.uZMin.value = sampleSrc?.zMin ?? 0.5;
+    u.uZMax.value = sampleSrc?.zMax ?? 35.0;
   });
 
   const handlePointerMove = (e: ThreeEvent<PointerEvent>) => {
@@ -271,14 +291,23 @@ const EpistemicShaderQuad: React.FC<EpistemicQuadProps> = (props) => {  const { 
   );
 };
 
-export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: boolean }> = ({ apiBaseUrl, active }) => {
+export interface EpistemicLensProps {
+  apiBaseUrl: string;
+  active?: boolean;
+  sharedPose?: { position: [number, number, number]; quaternion: [number, number, number, number]; camIdx?: number };
+  onPoseChange?: (pose: { position: [number, number, number]; quaternion: [number, number, number, number]; camIdx?: number }) => void;
+}
+
+export const EpistemicLensViewport: React.FC<EpistemicLensProps> = ({ apiBaseUrl, active, sharedPose }) => {
   const [measuredWeight, setMeasuredWeight] = useState(0.15);
   const [inferredWeight, setInferredWeight] = useState(0.10);
   const [imaginedWeight, setImaginedWeight] = useState(0.75);
   const [shimmerIntensity, setShimmerIntensity] = useState(0.65);
   const [loupeMode, setLoupeMode] = useState(1);
   const [loupeRadius, setLoupeRadius] = useState(0.18);
+  const [dataset, setDataset] = useState<DatasetKind>("khafre");
   const [hypothesis, setHypothesis] = useState<Hypothesis>("megalithic");
+  const [instrumentRig, setInstrumentRig] = useState<InstrumentRig>("drop_flare");
   const [voxelSize, setVoxelSize] = useState(0.25);
   const [sensorNoise, setSensorNoise] = useState(0.18);
   const [spiral, setSpiral] = useState<"interior_ramp" | "exterior_coil">("interior_ramp");
@@ -297,6 +326,10 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
   const [slices, setSlices] = useState<{ filename: string; anomaly_b64: string; peak_count: number; peak_positions_norm: number[]; masked_fraction: number }[]>([]);
   const [sliceBusy, setSliceBusy] = useState(false);
   const [sliceError, setSliceError] = useState<string | null>(null);
+  const [degradation, setDegradation] = useState<DegradationResponse | null>(null);
+  const [meshStats, setMeshStats] = useState<MeshUploadResponse | null>(null);
+  const [meshBusy, setMeshBusy] = useState(false);
+  const [meshError, setMeshError] = useState<string | null>(null);
   const [lastNBV, setLastNBV] = useState<{ target_z_m: number; predicted_variance_reduction_pct: number } | null>(null);
   const proc = useProceduralKhafreTextures(hypothesis);
 
@@ -323,12 +356,22 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
   React.useEffect(() => {
     fetchPricing(apiBaseUrl).then(setPricing).catch(() => setPricing(null));
     listJobs(apiBaseUrl, 8).then((r) => setJobs(r.jobs)).catch(() => {});
+    fetchDegradation(apiBaseUrl).then(setDegradation).catch(() => setDegradation(null));
   }, [apiBaseUrl]);
 
+  const activePosition = sharedPose?.position ?? [-38.5, -20.0, -45.0];
+  const activeQuaternion = sharedPose?.quaternion ?? [0, 0, 0, 1];
+  const activeCamIdx = sharedPose?.camIdx ?? 3;
+
   const baseReq = (h: Hypothesis, liveMode: "mock" | "live", seeds: number[]): EnsembleRequest => ({
-    camera: { pose: { position: [-38.5, -20.0, -45.0], quaternion: [0, 0, 0, 1] } },
-    hypothesis: h, instrument_rig: "drop_flare", seeds,
-    mode: liveMode, voxel_size: voxelSize, sensor_noise_sigma_m: sensorNoise,
+    camera: { pose: { position: activePosition, quaternion: activeQuaternion } },
+    dataset,
+    hypothesis: h,
+    instrument_rig: instrumentRig,
+    seeds,
+    mode: liveMode,
+    voxel_size: voxelSize,
+    sensor_noise_sigma_m: sensorNoise,
     spiral_style: spiral,
   });
 
@@ -426,11 +469,17 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
         <div className="z-10 flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-[#090A0F]/90 backdrop-blur-md border-b border-slate-800 text-xs">
           <div className="flex items-center gap-2">
             <ShieldAlert className="w-4 h-4 text-[#FFB800]" />
-            <span className="font-semibold tracking-wider uppercase text-slate-200">MILIMO DUAT // MODEL PREDICTION — CONDITIONED ON KHAFRE SAR GEOMETRY</span>
+            <span className="font-semibold tracking-wider uppercase text-slate-200">
+              MILIMO DUAT // MODEL PREDICTION — CONDITIONED ON {dataset === "khafre" ? "KHAFRE SAR" : dataset === "nfc" ? "SCANPYRAMIDS NFC" : dataset === "big-void" ? "SCANPYRAMIDS BIG VOID" : "UPLOADED MESH"} GEOMETRY
+            </span>
           </div>
           <div className="flex items-center gap-4 font-mono text-[11px] text-slate-400">
-            <span>TASK: atlasChisel</span><span>VOXEL_GAUGE: {voxelSize.toFixed(2)}m</span><span className="text-slate-500">SPIRAL:{spiral === "interior_ramp" ? "RAMP" : "COIL"}</span>
-            <span className="text-[#00F0FF]">CAM #04/32 (1280×720 PINHOLE)</span>
+            <span>TASK: atlasChisel</span>
+            <span>VOXEL_GAUGE: {voxelSize.toFixed(2)}m</span>
+            <span className="text-slate-500">RIG:{instrumentRig === "drop_flare" ? "FLARE 40m" : instrumentRig === "structured_laser" ? "LASER 25m" : "LED 6m"}</span>
+            <span className="text-[#00F0FF]">
+              CAM #{String(activeCamIdx + 1).padStart(2, "0")}/32 (Z={activePosition[2].toFixed(1)}m)
+            </span>
           </div>
         </div>
         <div className="relative w-full cursor-crosshair overflow-hidden bg-black" style={{ aspectRatio: "16 / 9" }}>
@@ -477,6 +526,23 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
                 onChange={(e) => setShimmerIntensity(parseFloat(e.target.value))} className="w-full accent-[#34D399]" />
             </div>
             <div className="pt-2 border-t border-slate-800">
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-slate-300 font-medium">Conditioning dataset</span>
+                <span className="font-mono text-[10px] text-slate-500">{dataset === "khafre" ? "contested" : dataset === "uploaded_mesh" ? "custom" : "validated"}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5 text-[11px] mb-2">
+                {([
+                  ["khafre", "Khafre Shaft #2"],
+                  ["nfc", "ScanPyramids NFC"],
+                  ["big-void", "ScanPyramids Void"],
+                  ["uploaded_mesh", "Uploaded Mesh"],
+                ] as [DatasetKind, string][]).map(([ds, label]) => (
+                  <button key={ds} onClick={() => setDataset(ds)}
+                    className={`px-2 py-1.5 rounded-md border transition text-left truncate ${dataset === ds
+                      ? "bg-slate-800 border-[#00F0FF] text-white font-medium"
+                      : "bg-[#090A0F] border-slate-800 text-slate-400 hover:border-slate-700"}`}>{label}</button>
+                ))}
+              </div>
               <div className="flex justify-between text-xs mb-1">
                 <span className="text-slate-300 font-medium">Atlas render mode</span>
                 <span className="font-mono text-[11px] text-slate-500">{layersBusy ? "working…" : layers ? "layers loaded" : "procedural fallback"}</span>
@@ -569,7 +635,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
               ["megalithic", "Megalithic Architecture", "Dressed limestone & granite spiral ramp, high-lumen drop flare", "press claim · unverified"],
               ["karst", "Phreatic Karst Dissolution", "Natural limestone sinkhole tube, wet travertine & water table", "geology · plausible"],
               ["artifact", "SAR Side-Lobe Echo Test", "Visualizes stepped voxel quantization & acoustic ghosting", "method artifact"],
-              ["bedrock_null", "Unbroken Bedrock (Null)", "No void at all — Alvarez 1960s muon null result", "validated null"],
+              ["bedrock_null", "Unbroken Bedrock (Null)", "No void at all — Alvarez 1960s muon null result (0-mask depth)", "validated null"],
             ] as [Hypothesis, string, string, string][]).map(([key, title, desc, chip]) => (
               <button key={key} onClick={() => setHypothesis(key)}
                 className={`p-3 rounded-lg border text-left transition ${hypothesis === key
@@ -585,8 +651,28 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
         </div>
         <div>
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
-            <Sliders className="w-4 h-4 text-[#00F0FF]" /><span>Sensor & Voxel Gauge</span></div>
+            <Sliders className="w-4 h-4 text-[#00F0FF]" /><span>Sensor, Rig & Voxel Gauge</span></div>
           <div className="space-y-4 bg-[#090A0F] p-4 rounded-lg border border-slate-800/80">
+            <div>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-slate-300 font-medium">Instrument lighting rig</span>
+                <span className="font-mono text-[10px] text-[#00F0FF]">
+                  {instrumentRig === "drop_flare" ? "zMax 40m" : instrumentRig === "structured_laser" ? "zMax 25m" : "zMax 6m"}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                {([
+                  ["drop_flare", "Drop flare"],
+                  ["structured_laser", "Laser sheet"],
+                  ["borescope_led", "Borescope LED"],
+                ] as [InstrumentRig, string][]).map(([rig, label]) => (
+                  <button key={rig} onClick={() => setInstrumentRig(rig)}
+                    className={`px-2 py-1.5 rounded-md border text-[11px] transition ${instrumentRig === rig
+                      ? "bg-slate-800 border-[#00F0FF] text-white font-medium"
+                      : "bg-[#090A0F] border-slate-800 text-slate-400 hover:border-slate-700"}`}>{label}</button>
+                ))}
+              </div>
+            </div>
             <div>
               <div className="flex justify-between text-xs mb-1">
                 <span className="text-slate-300 font-medium">Voxel size (scene gauge)</span>
@@ -619,6 +705,52 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
         </div>
         <div>
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
+            <Layers className="w-4 h-4 text-[#00F0FF]" /><span>Sensor Degradation & Mesh Ingest</span></div>
+          <div className="bg-[#090A0F] p-4 rounded-lg border border-slate-800/80 text-xs space-y-3">
+            {degradation && (
+              <div className="space-y-1 font-mono text-[10px]">
+                <div className="flex justify-between text-slate-400 border-b border-slate-800 pb-1">
+                  <span>SENSOR</span><span>VERTS / FACES</span><span>RMS ERROR</span>
+                </div>
+                {degradation.levels.map((lv) => (
+                  <div key={lv.name} className="flex justify-between text-slate-300">
+                    <span className="uppercase text-[#00F0FF]">{lv.name}</span>
+                    <span>{lv.vertices.toLocaleString()} / {lv.faces.toLocaleString()}</span>
+                    <span className="text-[#FFB800]">{lv.rms_displacement_m.toFixed(3)}m</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <label className="block px-3 py-2 rounded-md border border-slate-700 text-center cursor-pointer hover:border-[#00F0FF] transition">
+              {meshBusy ? "Ingesting SDF…" : "Upload surface mesh (.obj/.ply/.glb/.stl)"}
+              <input type="file" accept=".obj,.ply,.glb,.stl,.off" className="hidden"
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  setMeshBusy(true); setMeshError(null);
+                  try {
+                    const stats = await uploadMesh(apiBaseUrl, f);
+                    setMeshStats(stats);
+                    setDataset("uploaded_mesh");
+                  } catch (err) {
+                    setMeshError(err instanceof Error ? err.message.slice(0, 140) : "mesh ingest failed");
+                  } finally {
+                    setMeshBusy(false);
+                    e.target.value = "";
+                  }
+                }} />
+            </label>
+            {meshError && <div className="font-mono text-[11px] text-[#FF2D55]">{meshError}</div>}
+            {meshStats && (
+              <div className="font-mono text-[10px] text-[#34D399] space-y-0.5">
+                <div>Grid {meshStats.grid_shape.join("×")} · Void {(meshStats.void_fraction * 100).toFixed(1)}%</div>
+                <div>Mean reflectivity {meshStats.mean_reflectivity} · Dataset switched to Uploaded Mesh</div>
+              </div>
+            )}
+          </div>
+        </div>
+        <div>
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
             <Layers className="w-4 h-4 text-[#FFB800]" /><span>SAR Slice Ingest</span></div>
           <div className="bg-[#090A0F] p-4 rounded-lg border border-slate-800/80 text-xs space-y-2">
             <label className="block px-3 py-2 rounded-md border border-slate-700 text-center cursor-pointer hover:border-[#00F0FF] transition">
@@ -631,7 +763,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
                   try {
                     const fd = new FormData();
                     for (const f of Array.from(files)) fd.append("files", f);
-                    const res = await fetch(`${apiBaseUrl}/api/khafre/slices`, { method: "POST", body: fd });
+                    const res = await fetch(`${apiBaseUrl}/api/khafre/slices`, { method: "POST", headers: apiHeaders(), body: fd });
                     if (!res.ok) throw new Error(await res.text());
                     setSlices((await res.json()).slices);
                   } catch (err) {
@@ -672,9 +804,9 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
             {compare.status === "idle" && (
               <button onClick={runHypothesisCompare}
                 className="w-full px-3 py-2 rounded-md bg-[#34D399]/15 border border-[#34D399]/50 text-[#34D399] text-xs font-medium hover:bg-[#34D399]/25 transition">
-                Compare 3 hypotheses here (simulated)</button>
+                Compare all 4 hypotheses here ({mode === "mock" ? "simulated" : "live"})</button>
             )}
-            {compare.status === "loading" && <div className="text-slate-400 font-mono text-[11px]">Simulating 3 hypotheses…</div>}
+            {compare.status === "loading" && <div className="text-slate-400 font-mono text-[11px]">Evaluating 4 hypotheses…</div>}
             {compare.status === "error" && <div className="text-[#FF2D55] font-mono text-[11px]">Backend unreachable — start the API first.</div>}
             {compare.status === "done" && (
               <div className="grid grid-cols-2 gap-2">
@@ -694,7 +826,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
           <p className="text-slate-300 leading-relaxed text-[11px]">
             Ensemble disagreement peaks at{" "}
             <span className="font-mono text-white">
-              {lastNBV ? `Z = ${lastNBV.target_z_m}m (live ensemble)` : "Z = -112.4m (Spiral Ledge #4, offline placeholder)"}
+              {lastNBV ? `Z = ${lastNBV.target_z_m}m (live ensemble)` : "Z = -63.5m (Spiral Ledge #2, offline placeholder)"}
             </span>.
             A single physical borescope frame here resolves{" "}
             <span className="text-white font-semibold">

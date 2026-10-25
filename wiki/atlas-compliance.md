@@ -5,12 +5,12 @@
 
 ## Endpoints & auth
 
-- Base: `https://atlas-beta.worldlabs.ai/api/v2` (from `.env`, key present).
+- Base: `https://api.atlas-beta.worldlabs.ai/api/v2` (canonical OpenAPI host; overridden by `WLT_API_BASE_URL`).
 - Task: `POST /api/v2/tasks:atlasChisel` (+ optional `?wait=true`).
 - Poll: `GET /api/v2/operations/{id}` (or `POST :wait`); envelope
   `{id, done, error, response}` with `response: AtlasChiselResponse`.
 - Headers: `WLT-Api-Key: <key>` (NOT `Authorization: Bearer`),
-  `Content-Type: application/json`, optional `Idempotency-Key` (≤128 chars).
+  `Content-Type: application/json`, deterministic `Idempotency-Key` (`duat-<sha256[:48]>` ≤128 chars).
 - Health: `GET /api/v2/health` (no auth).
 
 ## Camera schema (all context + target cameras)
@@ -60,8 +60,12 @@
   `voxelSize` in normalized gauge (90th-pct disparity ≈ 1), 0–0.4
   (0/omit = keep depth; start 0.05–0.15); `voxelGridOrientation`:
   `world` (default, axis-aligned) | `gauge` (legacy).
-- `modelParameters`: `{seed?, numSteps?, returnDepth?}` — `returnDepth`
-  needs ≥2 targets with distinct centers (pure rotation → scale 0/NaN).
+- `modelParameters`: `{seed?, numSteps?}` (`additionalProperties: false`).
+- `returnDepth`: top-level boolean on `AtlasChiselRequest` (NOT inside `modelParameters`);
+  needs ≥2 targets with distinct centers (pure rotation → scale 0/NaN). Returned
+  `depthAsset` (linear EXR) and `logDepthAsset` (PNG/EXR) are decoded to metric planar
+  depth in meters (`read_planar_exr_bytes` / `decode_log_depth_png`), with zero-confidence
+  pixels masked to `0.0`.
 
 ## Assets (draft flow was wrong)
 

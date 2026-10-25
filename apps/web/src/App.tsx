@@ -2,8 +2,9 @@
  * duat/apps/web/src/App.tsx — Master Application Shell for Project Duat.
  */
 import React, { useState, useEffect, Suspense, lazy } from "react";
-import { Layers, Compass, Server, ShieldCheck } from "lucide-react";
+import { Layers, Compass, Server, ShieldCheck, KeyRound } from "lucide-react";
 import { ViewportErrorBoundary } from "./components/ErrorBoundary";
+import { getOperatorKey, setOperatorKey } from "./lib/api";
 
 const EpistemicLensViewport = lazy(() =>
   import("./components/EpistemicLensViewport").then((m) => ({ default: m.EpistemicLensViewport })));
@@ -16,12 +17,31 @@ const ViewportFallback: React.FC<{ label: string }> = ({ label }) => (
   </div>
 );
 
+export interface SharedPose {
+  position: [number, number, number];
+  quaternion: [number, number, number, number];
+  camIdx?: number;
+}
+
 export function App() {
   const [activeTab, setActiveTab] = useState<"observatory" | "helical">("observatory");
   const [apiStatus, setApiStatus] = useState<"checking" | "live" | "mock" | "offline">("checking");
   // Bake in at build time for production (VITE_API_BASE_URL), else local dev default.
   const [apiBaseUrl] = useState<string>(
     ((import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_BASE_URL || "http://localhost:8000"));
+  const [sharedPose, setSharedPose] = useState<SharedPose>({
+    position: [-38.5, -20.0, -45.0],
+    quaternion: [0, 0, 0, 1],
+    camIdx: 0,
+  });
+  const [operatorKey, setOpKeyState] = useState<string>(() => getOperatorKey());
+  const [showKeyInput, setShowKeyInput] = useState<boolean>(false);
+
+  const handleSaveOperatorKey = (val: string) => {
+    setOpKeyState(val);
+    setOperatorKey(val);
+    setShowKeyInput(false);
+  };
 
   useEffect(() => {
     const checkApi = async () => {
@@ -57,7 +77,7 @@ export function App() {
             className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md text-xs font-medium transition ${activeTab === "helical" ? "bg-slate-800 text-[#00F0FF] shadow" : "text-slate-400 hover:text-white"}`}>
             <Compass className="w-3.5 h-3.5" /><span>3D Helical Descent & Point-Cloud</span></button>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 relative">
           <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-mono ${
             apiStatus === "live" ? "bg-cyan-950/30 border-cyan-500/40 text-[#00F0FF]"
             : apiStatus === "mock" ? "bg-slate-800/80 border-slate-600 text-slate-200"
@@ -68,6 +88,47 @@ export function App() {
               : apiStatus === "mock" ? "Mock · simulated"
               : apiStatus === "checking" ? "Connecting…" : "Offline"}</span>
           </div>
+          <button
+            onClick={() => setShowKeyInput((v) => !v)}
+            title="Set Operator API Key (X-Duat-Key) for protected production deployments"
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[11px] font-mono transition ${
+              operatorKey
+                ? "border-emerald-500/40 bg-emerald-950/20 text-[#34D399]"
+                : "border-slate-700 bg-[#0D0F17] text-slate-400 hover:text-white"
+            }`}>
+            <KeyRound className="w-3 h-3" />
+            <span>{operatorKey ? "Auth Key Set" : "Operator Key"}</span>
+          </button>
+          {showKeyInput && (
+            <div className="absolute right-0 top-11 z-50 w-72 p-3 rounded-lg bg-[#0D0F17] border border-slate-700 shadow-xl space-y-2">
+              <div className="text-[11px] font-mono text-slate-300">Operator Auth Header (`X-Duat-Key`)</div>
+              <input
+                type="password"
+                defaultValue={operatorKey}
+                placeholder="Enter OPERATOR_API_KEY…"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSaveOperatorKey((e.target as HTMLInputElement).value);
+                }}
+                id="duat-op-key-input"
+                className="w-full px-2.5 py-1.5 rounded bg-slate-900 border border-slate-700 text-xs font-mono text-white"
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => handleSaveOperatorKey("")}
+                  className="px-2 py-1 text-[11px] font-mono text-slate-400 hover:text-white">
+                  Clear
+                </button>
+                <button
+                  onClick={() => {
+                    const el = document.getElementById("duat-op-key-input") as HTMLInputElement | null;
+                    handleSaveOperatorKey(el ? el.value : "");
+                  }}
+                  className="px-2.5 py-1 rounded bg-[#00F0FF] text-black text-[11px] font-mono font-bold">
+                  Save
+                </button>
+              </div>
+            </div>
+          )}
           <div className="hidden lg:flex items-center gap-3 px-3 py-1.5 text-[11px] font-mono text-slate-500">
             <a href={`${apiBaseUrl}/docs`} target="_blank" rel="noreferrer" className="hover:text-[#00F0FF] transition">API docs →</a>
             <span title="Export lives in the Epistemic Lens deck and uses the current view state">Export: Lens deck → Export card</span>
@@ -79,7 +140,7 @@ export function App() {
       <main className="flex-1 p-6 max-w-[1750px] w-full mx-auto flex flex-col">
         <div className="flex-1 flex-col gap-4" style={{ display: activeTab === "observatory" ? "flex" : "none" }}>
           <div className="flex items-center justify-between">
-            <div className="text-xs text-slate-400 font-mono">FLAGSHIP DATASET: <span className="text-white">Khafre Pyramid Subterranean SAR Anomalies (8 Shafts + Basal Chambers)</span>{" "}
+            <div className="text-xs text-slate-400 font-mono">FLAGSHIP DATASET: <span className="text-white">Khafre Pyramid Subterranean SAR Anomalies (5 Zed Complexes + 8 Shafts + 2 Cubic Basal Chambers)</span>{" "}
               <a href="https://www.mdpi.com/2072-4292/18/16/2679" target="_blank" rel="noreferrer"
                 title="Press claim, never peer-reviewed; foundational 2022 paper retracted Aug 2026 for methodological flaws. Click for the retraction notice."
                 className="text-[#FFB800] border border-[#FFB800]/50 rounded px-1.5 py-0.5 hover:bg-[#FFB800]/10 transition">
@@ -90,7 +151,12 @@ export function App() {
           </div>
           <ViewportErrorBoundary name="Epistemic Lens">
             <Suspense fallback={<ViewportFallback label="Epistemic Lens" />}>
-              <EpistemicLensViewport apiBaseUrl={apiBaseUrl} active={activeTab === "observatory"} />
+              <EpistemicLensViewport
+                apiBaseUrl={apiBaseUrl}
+                active={activeTab === "observatory"}
+                sharedPose={sharedPose}
+                onPoseChange={setSharedPose}
+              />
             </Suspense>
           </ViewportErrorBoundary>
         </div>
@@ -101,7 +167,14 @@ export function App() {
           </div>
           <ViewportErrorBoundary name="Helical Descent">
             <Suspense fallback={<ViewportFallback label="Helical Descent" />}>
-              <HelicalDescentNavigator apiBaseUrl={apiBaseUrl} active={activeTab === "helical"} />
+              <HelicalDescentNavigator
+                apiBaseUrl={apiBaseUrl}
+                active={activeTab === "helical"}
+                onInspectInLens={(pose) => {
+                  setSharedPose(pose);
+                  setActiveTab("observatory");
+                }}
+              />
             </Suspense>
           </ViewportErrorBoundary>
         </div>

@@ -29,9 +29,18 @@ from .pipeline import store as store
 
 from .pipeline.claims import KHAFRE_DATASET_CLAIM_IDS, VALID_STATUSES, get_claim, list_claims
 
-from .pipeline.depth_renderer import render_shaft_planar_depth_and_reflectivity
-from .pipeline.ensemble import (compute_consensus, compute_disagreement, disagreement_to_u8,
-                                provenance_manifest)
+from .pipeline.depth_renderer import (
+    decode_log_depth_png,
+    raycast_mesh_planar_depth_and_reflectivity,
+    render_shaft_planar_depth_and_reflectivity,
+)
+from .pipeline.ensemble import (
+    compute_consensus,
+    compute_disagreement,
+    disagreement_to_u8,
+    provenance_manifest,
+    score_next_best_view,
+)
 from .pipeline.khafre_sar_volume import EpistemicVolumeBundle, KhafreSARVolumeEngine
 from .pipeline.prompts import compose_epistemic_prompt
 from .pipeline.worldlabs_client import AtlasError, WorldLabsAtlasClient
@@ -45,6 +54,7 @@ async def lifespan(app: FastAPI):
     # first use (see _get_bundle) so deploys stay fast and small instances
     # don't OOM before serving traffic. Only the DB is initialized here.
     store.init_db()
+    store.recover_orphaned_jobs()
     yield
 
 
@@ -162,7 +172,14 @@ async def _atlas_error_handler(request: Any, exc: AtlasError) -> Any:
 
 class EnsembleExploreRequest(BaseModel):
     camera: PinholeCameraSpec = Field(default_factory=PinholeCameraSpec)
+    dataset: Literal["khafre", "nfc", "big-void", "uploaded_mesh"] = "khafre"
     hypothesis: Literal["megalithic", "karst", "artifact", "bedrock_null"] = "megalithic"
+    force_geometry_on_null: bool = Field(
+        default=False,
+        description="If False (default), bedrock_null (Alvarez 1969 null baseline) renders "
+                    "an empty 0-masked depth map so Chisel runs unconditioned. Set True to "
+                    "force shaft geometry conditioning under the bedrock_null prompt.",
+    )
     instrument_rig: Literal["borescope_led", "drop_flare", "structured_laser"] = "drop_flare"
     seeds: List[int] = Field(default_factory=lambda: [7, 42, 108, 256])
     voxel_size: float = Field(default=0.25, ge=0.0, le=2.0)
@@ -201,6 +218,9 @@ class DepthRenderRequest(BaseModel):
     """Render Tier-1/Tier-2 layers for an arbitrary pinhole pose (backend frame)."""
 
     camera: PinholeCameraSpec = Field(default_factory=PinholeCameraSpec)
+    dataset: Literal["khafre", "nfc", "big-void", "uploaded_mesh"] = "khafre"
+    hypothesis: Literal["megalithic", "karst", "artifact", "bedrock_null"] = "megalithic"
+    force_geometry_on_null: bool = False
     z_min: float = 0.5
     z_max: Optional[float] = None
     out_width: int = Field(default=160, ge=32, le=640)
@@ -268,6 +288,8 @@ def _get_bundle() -> EpistemicVolumeBundle:
 
 
 _VOLUME_CACHE: Dict[tuple, EpistemicVolumeBundle] = {}
+_REFERENCE_MESH_CACHE: Dict[str, trimesh.Trimesh] = {}
+_UPLOADED_MESH: Optional[trimesh.Trimesh] = None
 
 
 def _get_bundle_for(seed: int, chamber_size_m: float,
@@ -281,6 +303,99 @@ def _get_bundle_for(seed: int, chamber_size_m: float,
         _VOLUME_CACHE[key] = VOLUME_ENGINE.synthesize_khafre_subterranean_complex(
             seed=key[0], chamber_size_m=key[1], spiral_style=spiral_style)
     return _VOLUME_CACHE[key]
+
+
+def _get_dataset_mesh(dataset: str) -> trimesh.Trimesh:
+    """Return a closed cavity Trimesh for validated reference voids or uploaded meshes."""
+    if dataset == "uploaded_mesh" and _UPLOADED_MESH is not None:
+        return _UPLOADED_MESH
+    if dataset in ("nfc", "big-void"):
+        if dataset not in _REFERENCE_MESH_CACHE:
+            from .pipeline.khafre_sar_volume import synthesize_reference_void
+            ref_bundle = synthesize_reference_void(dataset)
+            _REFERENCE_MESH_CACHE[dataset] = VOLUME_ENGINE.extract_posterior_cavity_mesh(
+                ref_bundle, posterior_seed=None
+            )
+        return _REFERENCE_MESH_CACHE[dataset]
+    return _get_degradation_base()
+
+
+def _render_conditioning_layers(
+    camera: PinholeCameraSpec,
+    z_min: float,
+    z_max: float,
+    dataset: str = "khafre",
+    hypothesis: str = "megalithic",
+    force_geometry_on_null: bool = False,
+    spiral_style: str = "interior_ramp",
+    noise_sigma_m: float = 0.18,
+    seed: int = 7,
+    shaft_center_xy: Tuple[float, float] = (-40.0, -20.0),
+    out_width: Optional[int] = None,
+    out_height: Optional[int] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Unified conditioning depth + reflectivity renderer supporting the Khafre SDF
+    raymarcher, ScanPyramids validated reference voids ('nfc', 'big-void'), and
+    user-uploaded surface meshes ('uploaded_mesh')."""
+    w = out_width or camera.width
+    h = out_height or camera.height
+    sx = w / camera.width
+    sy = h / camera.height
+    fx, fy = camera.fx * sx, camera.fx * sy
+    cx, cy = (camera.width / 2.0) * sx, (camera.height / 2.0) * sy
+    null_void = (hypothesis == "bedrock_null") and not force_geometry_on_null
+    wall_relief_m = 1.1 if hypothesis == "artifact" else 0.0
+    quat = tuple(float(v) for v in camera.pose.quaternion)
+    pos = tuple(float(v) for v in camera.pose.position)
+
+    if dataset == "khafre":
+        return render_shaft_planar_depth_and_reflectivity(
+            cam_origin_xyz=pos,
+            width=w, height=h, fx=fx, fy=fy, cx=cx, cy=cy,
+            z_min=z_min, z_max=z_max,
+            shaft_center_xy=shaft_center_xy,
+            wall_relief_m=wall_relief_m,
+            spiral_style=spiral_style,
+            noise_sigma_m=noise_sigma_m,
+            seed=seed,
+            cam_quaternion_xyzw=quat,
+            coordinate_system=camera.coordinate_system,
+            null_void=null_void,
+        )
+
+    if null_void:
+        return (
+            np.zeros((h, w), dtype=np.uint8),
+            np.full((h, w), 38, dtype=np.uint8),
+            np.zeros((h, w), dtype=bool),
+        )
+
+    mesh = _get_dataset_mesh(dataset)
+    # Reference voids ('nfc', 'big-void') are centered at (0, 0, 0) in local coords.
+    # If the caller used the default Khafre shaft coordinates, place the camera inside the void.
+    lo, hi = mesh.bounds
+    if not (lo[0] <= pos[0] <= hi[0] and lo[1] <= pos[1] <= hi[1] and lo[2] <= pos[2] <= hi[2]):
+        center = 0.5 * (lo + hi)
+        pos = (float(center[0]), float(center[1]), float(center[2]))
+        # Aim along the longest axis of the cavity
+        extents = hi - lo
+        longest = int(np.argmax(extents))
+        if longest == 0:
+            # Look along +X in RUB: rotate -Z to +X (-90 deg around Y)
+            quat = (0.0, -0.70711, 0.0, 0.70711)
+        elif longest == 1:
+            # Look along +Y in RUB: rotate -Z to +Y (+90 deg around X)
+            quat = (0.70711, 0.0, 0.0, 0.70711)
+    return raycast_mesh_planar_depth_and_reflectivity(
+        mesh=mesh,
+        cam_origin_xyz=pos,
+        width=w, height=h, fx=fx, fy=fy, cx=cx, cy=cy,
+        z_min=z_min, z_max=z_max,
+        cam_quaternion_xyzw=quat,
+        coordinate_system=camera.coordinate_system,
+        noise_sigma_m=noise_sigma_m,
+        seed=seed,
+    )
 
 
 @app.get("/api/health")
@@ -383,14 +498,26 @@ async def _run_ensemble(
     # Render depth once (fast path), or once per seed from independent
     # posterior draws when the caller wants true geometry variance.
     render_seeds = list(req.seeds) if req.posterior_resample else [req.seeds[0] if req.seeds else 42]
-    depth_runs = []
-    for rs in render_seeds:
-        log_u8, refl_u8, valid = render_shaft_planar_depth_and_reflectivity(
-            cam_origin_xyz=tuple(req.camera.pose.position),
-            width=req.camera.width, height=req.camera.height, fx=req.camera.fx,
-            z_min=req.z_min, z_max=z_max, spiral_style=req.spiral_style,
-            noise_sigma_m=req.sensor_noise_sigma_m, seed=rs)
-        depth_runs.append((log_u8, refl_u8, valid))
+
+    def _render_all_seeds() -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        runs = []
+        for rs in render_seeds:
+            runs.append(
+                _render_conditioning_layers(
+                    camera=req.camera,
+                    z_min=req.z_min,
+                    z_max=z_max,
+                    dataset=req.dataset,
+                    hypothesis=req.hypothesis,
+                    force_geometry_on_null=req.force_geometry_on_null,
+                    spiral_style=req.spiral_style,
+                    noise_sigma_m=req.sensor_noise_sigma_m,
+                    seed=rs,
+                )
+            )
+        return runs
+
+    depth_runs = await asyncio.to_thread(_render_all_seeds)
     log_depth_u8, reflectivity_u8, valid_mask = depth_runs[0]
 
     atlas_cam = req.camera.to_atlas_dict()
@@ -416,7 +543,16 @@ async def _run_ensemble(
                                               structural_weight=req.structural_weight)
     disagreement_u8 = disagreement_to_u8(dis_norm)
 
-    manifest = {"camera": atlas_cam, "prompt": prompt, "seeds": req.seeds,
+    cam_z = float(req.camera.pose.position[2])
+    candidate_zs = [round(cam_z - step, 2) for step in (6.0, 12.0, 18.5, 26.0, 34.0)]
+    planar_z = decode_log_depth_png(log_depth_u8, req.z_min, z_max)
+    best_z, reduction_pct = score_next_best_view(
+        dis_norm, valid_mask, candidate_zs, planar_z=planar_z, cam_z_m=cam_z
+    )
+    delta_m = round(abs(cam_z - best_z), 1)
+
+    manifest = {"camera": atlas_cam, "dataset": req.dataset, "hypothesis": req.hypothesis,
+                "prompt": prompt, "seeds": req.seeds,
                 "voxel_size": req.voxel_size, "z_min": req.z_min, "z_max": z_max,
                 "spiral_style": req.spiral_style,
                 "child_hashes": [r.request_hash for r in results]}
@@ -451,10 +587,10 @@ async def _run_ensemble(
             imagined_consensus_rgb_b64=_encode_png_b64(consensus_rgb),
             disagreement_map_b64=_encode_png_b64(disagreement_u8)),
         next_best_view=NextBestViewRecommendation(
-            target_z_m=round(float(req.camera.pose.position[2] - 18.5), 2),
-            predicted_variance_reduction_pct=round(min(92.0, 45.0 + mean_dis * 80.0), 1),
-            rationale=("Ensemble variance peaks along the helical ledge occlusion boundary; "
-                       "advancing the borescope 18.5m down-shaft maximizes information gain.")))
+            target_z_m=round(best_z, 2),
+            predicted_variance_reduction_pct=reduction_pct,
+            rationale=(f"Ensemble variance peaks in the {delta_m}m depth band along the occlusion "
+                       f"boundary; advancing the sensor rig to Z={best_z:.1f}m maximizes information gain.")))
 
 
 @app.post("/api/chisel/chain")
@@ -480,17 +616,17 @@ async def _run_chain(
     `promptUsed` becomes the next prompt with enhancement off (latency win).
     Resume via start_batch + resume asset/camera (assets persist server-side).
     """
-    traj = VOLUME_ENGINE.generate_helical_descent_cameras(num_cameras=32)
-    _, default_zmax = compose_epistemic_prompt(req.hypothesis, req.instrument_rig)
+    prompt, default_zmax = compose_epistemic_prompt(req.hypothesis, req.instrument_rig)
     z_max = req.z_max if req.z_max is not None else default_zmax
     _check_rollout(n_context=1, n_source=1, n_targets=req.chain_targets)
     traj = VOLUME_ENGINE.generate_helical_descent_cameras(num_cameras=32)
-    prompt = compose_epistemic_prompt(req.hypothesis, req.instrument_rig)[0]
-    out, carry, carry_depth = [], None, None
+    out, carry = [], None
     if req.resume_source_asset_id and req.resume_source_camera:
         carry = {"imageAsset": {"assetId": req.resume_source_asset_id},
                  "camera": req.resume_source_camera}
     total_batches = min(batches, max(1, (len(traj) + req.chain_targets - 1) // req.chain_targets))
+    null_void = (req.hypothesis == "bedrock_null") and not req.force_geometry_on_null
+    wall_relief_m = 1.1 if req.hypothesis == "artifact" else 0.0
     for b in range(req.start_batch, total_batches):
         if job_id and store.get_job(job_id) and store.get_job(job_id)["status"] == "cancelled":
             raise asyncio.CancelledError()
@@ -502,7 +638,10 @@ async def _run_chain(
         for t in seg:
             log_u8, _, _ = render_shaft_planar_depth_and_reflectivity(
                 cam_origin_xyz=tuple(t["extrinsics"]["position"]),
+                cam_quaternion_xyzw=tuple(t["extrinsics"]["quaternion"]),
+                coordinate_system=t["extrinsics"].get("coordinateSystem", "rub"),
                 z_min=req.z_min, z_max=z_max, spiral_style=req.spiral_style,
+                wall_relief_m=wall_relief_m, null_void=null_void,
                 seed=(req.seeds[0] if req.seeds else 7) + b)
             ctx.append((t, log_u8))
         srcs = [carry] if carry else []
@@ -641,7 +780,14 @@ async def cancel_job(job_id: str) -> Dict[str, Any]:
     if job["status"] not in ("pending", "running"):
         raise HTTPException(status_code=409, detail=f"Job is already {job['status']}.")
     store.update_job(job_id, status="cancelled")
-    return {"id": job_id, "status": "cancelled"}
+    cancelled_ops = []
+    for op in store.list_operations(job_id=job_id, status="running"):
+        op_id = op.get("op_id", "")
+        if op_id:
+            await ATLAS_CLIENT.cancel_operation(op_id, reason=f"Job {job_id} cancelled by operator.")
+            store.update_operation(op_id, "cancelled")
+            cancelled_ops.append(op_id)
+    return {"id": job_id, "status": "cancelled", "cancelled_operations": cancelled_ops}
 
 
 @app.get("/api/pricing")
@@ -739,16 +885,13 @@ async def degradation_sweep() -> Dict[str, Any]:
     full-resolution base mesh (fidelity proxy: prediction error grows as
     sensor resolution coarsens).
     """
-    import numpy as np
-
     from .pipeline.geometry import DEFAULT_SWEEP, degrade_for_sweep
 
-    base = _get_degradation_base()
-    base_v = base.vertices.astype(np.float64)
+    base = await asyncio.to_thread(_get_degradation_base)
+    swept = await asyncio.to_thread(degrade_for_sweep, base, DEFAULT_SWEEP)
     levels = []
-    for name, sigma, quantum in DEFAULT_SWEEP:
-        _, m = degrade_for_sweep(base, [(name, sigma, quantum)])[0]
-        rms = float(np.sqrt(np.mean((m.vertices.astype(np.float64) - base_v) ** 2)))
+    for (name, sigma, quantum), (_, m) in zip(DEFAULT_SWEEP, swept):
+        rms = float(m.metadata.get("rms_displacement_m", 0.0))
         levels.append({"name": name, "blur_sigma_m": sigma, "quant_m": quantum,
                        "vertices": int(len(m.vertices)), "faces": int(len(m.faces)),
                        "rms_displacement_m": round(rms, 4)})
@@ -770,19 +913,26 @@ async def render_depth(req: DepthRenderRequest) -> DepthRenderResponse:
     sy = req.out_height / req.camera.height
     fx, fy = req.camera.fx * sx, req.camera.fx * sy
     cx, cy = (req.camera.width / 2.0) * sx, (req.camera.height / 2.0) * sy
-    log_u8, refl_u8, valid = render_shaft_planar_depth_and_reflectivity(
-        cam_origin_xyz=tuple(req.camera.pose.position),
-        width=req.out_width, height=req.out_height, fx=fx, fy=fy, cx=cx, cy=cy,
-        z_min=req.z_min, z_max=z_max, shaft_center_xy=tuple(req.shaft_center_xy),
-        spiral_style=req.spiral_style, noise_sigma_m=0.0, seed=req.seed)
+    log_u8, refl_u8, valid = await asyncio.to_thread(
+        _render_conditioning_layers,
+        camera=req.camera,
+        z_min=req.z_min,
+        z_max=z_max,
+        dataset=req.dataset,
+        hypothesis=req.hypothesis,
+        force_geometry_on_null=req.force_geometry_on_null,
+        spiral_style=req.spiral_style,
+        noise_sigma_m=0.0,
+        seed=req.seed,
+        shaft_center_xy=tuple(req.shaft_center_xy),
+        out_width=req.out_width,
+        out_height=req.out_height,
+    )
     return DepthRenderResponse(
         log_depth_b64=_encode_png_b64(log_u8), reflectivity_b64=_encode_png_b64(refl_u8),
         width=req.out_width, height=req.out_height, fx=fx, fy=fy, cx=cx, cy=cy,
         z_min=req.z_min, z_max=z_max,
         valid_fraction=round(float(np.count_nonzero(valid) / valid.size), 4))
-
-
-_GLB_CACHE: Dict[tuple, bytes] = {}
 
 
 _GLB_CACHE: Dict[tuple, bytes] = {}
@@ -796,14 +946,20 @@ def _complex_parts() -> List[Dict[str, Any]]:
         {"name": "limestone_platform", "kind": "box", "center": [0.0, 0.0, -10.0],
          "size": [200.0, 200.0, 20.0], "claim_ids": ["khafre-2025-press"]},
     ]
+    zed_centers = [(-40.0, -40.0, -22.0), (-40.0, 40.0, -22.0), (0.0, 0.0, -20.0),
+                   (40.0, -40.0, -22.0), (40.0, 40.0, -22.0)]
+    for zi, (zx, zy, zz) in enumerate(zed_centers):
+        parts.append({"name": f"zed_structure_{zi}", "kind": "zed",
+                      "center": [zx, zy, zz], "size": [16.0, 16.0, 15.0],
+                      "claim_ids": ["khafre-2025-press"]})
     for xi, sx in enumerate([-40.0, 40.0]):
         for yi, sy in enumerate([-60.0, -20.0, 20.0, 60.0]):
             parts.append({"name": f"shaft_{xi * 4 + yi}", "kind": "shaft",
-                          "center": [sx, sy, -282.5], "radius_m": 5.5, "height_m": 535.0,
+                          "center": [sx, sy, -312.5], "radius_m": 5.5, "height_m": 595.0,
                           "claim_ids": ["khafre-2025-press"]})
     for i, (cx, cy) in enumerate([(-40.0, 0.0), (40.0, 0.0)]):
         parts.append({"name": f"basal_chamber_{i}", "kind": "box",
-                      "center": [cx, cy, -565.0], "size": [80.0, 80.0, 50.0],
+                      "center": [cx, cy, -590.0], "size": [80.0, 80.0, 80.0],
                       "claim_ids": ["khafre-2025-press"]})
     parts.append({"name": "water_table", "kind": "water", "center": [0.0, 0.0, -585.0],
                   "size": [240.0, 240.0, 1.0], "claim_ids": ["khafre-2025-press"]})
@@ -819,7 +975,7 @@ async def complex_metadata() -> Dict[str, Any]:
 @app.get("/api/khafre/complex-glb")
 async def complex_glb() -> Any:
     """Full-complex overview mesh (primitives, no marching cubes): pyramid shell,
-    platform, 8 shafts, 2 chambers, water plane. Backend Z-up frame.
+    platform, 5 multi-level Zed structures, 8 shafts, 2 cubic chambers, water plane.
 
     NOTE: trimesh GLB export omits NORMAL attributes (POSITION + COLOR_0 only).
     Consumers must compute normals (our viewer does flat faceted normals on
@@ -830,7 +986,8 @@ async def complex_glb() -> Any:
     if key not in _GLB_CACHE:
         scene = trimesh.Scene()
         colors = {"pyramid": [210, 180, 140, 255], "box": [170, 150, 120, 255],
-                  "shaft": [90, 140, 200, 255], "water": [60, 120, 220, 140]}
+                  "zed": [215, 165, 95, 255], "shaft": [90, 140, 200, 255],
+                  "water": [60, 120, 220, 140]}
         for part in _complex_parts():
             kind = part["kind"]
             if kind == "pyramid":
@@ -843,6 +1000,15 @@ async def complex_glb() -> Any:
                 cx, cy, cz = part["center"]
                 mesh = trimesh.creation.cylinder(radius=part["radius_m"], height=part["height_m"], sections=24)
                 mesh.apply_translation([cx, cy, cz])
+            elif kind == "zed":
+                zx, zy, zz = part["center"]
+                tiers = []
+                for lvl in range(5):
+                    w_lvl = 16.0 - lvl * 2.0
+                    t_box = trimesh.creation.box(extents=[w_lvl, w_lvl, 2.2])
+                    t_box.apply_translation([zx, zy, zz - 6.0 + lvl * 3.0])
+                    tiers.append(t_box)
+                mesh = trimesh.util.concatenate(tiers)
             elif kind == "water":
                 mesh = trimesh.creation.box(extents=part["size"])
                 mesh.apply_translation(part["center"])
@@ -996,7 +1162,14 @@ async def ingest_mesh(file: UploadFile) -> Dict[str, Any]:
         mesh = load_mesh(tmp_path)
         if isinstance(mesh, trimesh.Scene):
             mesh = trimesh.util.concatenate(tuple(mesh.geometry.values()))
-        bundle = mesh_to_bundle(mesh)
+        bundle = await asyncio.to_thread(mesh_to_bundle, mesh)
+        global _UPLOADED_MESH
+        try:
+            _UPLOADED_MESH = await asyncio.to_thread(
+                VOLUME_ENGINE.extract_posterior_cavity_mesh, bundle, None
+            )
+        except Exception:
+            _UPLOADED_MESH = mesh
     except HTTPException:
         raise
     except Exception as exc:

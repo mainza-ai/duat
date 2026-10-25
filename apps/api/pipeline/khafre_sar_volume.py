@@ -57,7 +57,7 @@ class KhafreSARVolumeEngine:
     def __init__(
         self,
         grid_shape: Tuple[int, int, int] = (160, 160, 240),
-        bounds_min_m: Tuple[float, float, float] = (-100.0, -100.0, -650.0),
+        bounds_min_m: Tuple[float, float, float] = (-100.0, -100.0, -680.0),
         bounds_max_m: Tuple[float, float, float] = (100.0, 100.0, 0.0),
     ):
         self.grid_shape = grid_shape
@@ -90,6 +90,24 @@ class KhafreSARVolumeEngine:
 
         sdf = np.full(self.grid_shape, 100.0, dtype=np.float32)
 
+        # 1. Five Multi-Level Super-Structures ("Zed" complexes) at the pyramid base
+        # (March 15, 2025 Bologna press briefing: 5 multi-level structures connected
+        # by horizontal pathways above the 8 vertical cylindrical shafts).
+        zed_centers = [
+            (-40.0, -40.0, -22.0),
+            (-40.0, 40.0, -22.0),
+            (0.0, 0.0, -20.0),
+            (40.0, -40.0, -22.0),
+            (40.0, 40.0, -22.0),
+        ]
+        for zx, zy, zz in zed_centers:
+            for lvl in range(5):
+                tier_z = zz - 6.0 + lvl * 3.0
+                tier_xy = 16.0 - lvl * 1.8
+                tier_sdf = _box_sdf_field(X, Y, Z, (zx, zy, tier_z), (tier_xy, tier_xy, 2.0))
+                sdf = np.minimum(sdf, tier_sdf)
+
+        # 2. Eight vertical cylindrical shafts (2 N-S rows of 4, radius 5.5 m, down to -610 m)
         shaft_x_coords = [-40.0, 40.0]
         shaft_y_coords = [-60.0, -20.0, 20.0, 60.0]
         params = ShaftParams(
@@ -101,9 +119,10 @@ class KhafreSARVolumeEngine:
                 shaft_sdf = shaft_void_sdf(X, Y, Z, sx, sy, params)
                 sdf = np.minimum(sdf, shaft_sdf)
 
-        chamber_centers = [(-40.0, 0.0, -565.0), (40.0, 0.0, -565.0)]
+        # 3. Two cubic basal chambers (~80x80x80 m or 90x90x90 m per outlet variance)
+        chamber_centers = [(-40.0, 0.0, -590.0), (40.0, 0.0, -590.0)]
         half_xy = chamber_size_m / 2.0
-        half_z = 25.0
+        half_z = min(half_xy, 45.0)
         for cx, cy, cz in chamber_centers:
             q_x = np.abs(X - cx) - half_xy
             q_y = np.abs(Y - cy) - half_xy
@@ -115,12 +134,15 @@ class KhafreSARVolumeEngine:
             )
             sdf = np.minimum(sdf, box_sdf)
 
+        # 4. Upper N-S connecting corridors (z = -45 m) & deep basal E-W link (z = -590 m)
         for sx in shaft_x_coords:
             corridor_sdf = np.maximum(
                 np.abs(X - sx) - 3.5,
                 np.maximum(np.abs(Y) - 65.0, np.abs(Z - (-45.0)) - 4.0),
             )
             sdf = np.minimum(sdf, corridor_sdf)
+        basal_link_sdf = _box_sdf_field(X, Y, Z, (0.0, 0.0, -590.0), (88.0, 12.0, 12.0))
+        sdf = np.minimum(sdf, basal_link_sdf)
 
         water_table_boost = np.exp(-((Z - (-585.0)) / 12.0) ** 2) * 0.45
         boundary_proximity = np.exp(-(sdf / 4.0) ** 2) * 0.40
@@ -130,7 +152,7 @@ class KhafreSARVolumeEngine:
         for sx in shaft_x_coords:
             for sy in shaft_y_coords:
                 near = ((np.abs(X - sx) < 12.0) & (np.abs(Y - sy) < 12.0)
-                        & (Z > -600.0) & (Z < 0.0))
+                        & (Z > -620.0) & (Z < 0.0))
                 if np.any(near):
                     prox = spiral_feature_proximity(
                         X[near], Y[near], Z[near], sx, sy, params)
@@ -265,8 +287,31 @@ class KhafreSARVolumeEngine:
         for z_pos, ang in zip(z_vals, angles):
             cx = shaft_center_xy[0] + orbit_radius_m * np.cos(ang)
             cy = shaft_center_xy[1] + orbit_radius_m * np.sin(ang)
-            half_yaw = (ang + np.pi * 0.75) * 0.5
-            quat = [0.0, 0.0, round(float(np.sin(half_yaw)), 5), round(float(np.cos(half_yaw)), 5)]
+            # Aim inward across the shaft and downward along the helical ramp
+            target = np.array([
+                shaft_center_xy[0] - 1.5 * np.cos(ang),
+                shaft_center_xy[1] - 1.5 * np.sin(ang),
+                z_pos - 16.0,
+            ], dtype=np.float64)
+            pos = np.array([cx, cy, z_pos], dtype=np.float64)
+            fwd = target - pos
+            fwd = fwd / max(float(np.linalg.norm(fwd)), 1e-9)
+            up_ref = np.array([-np.sin(ang), np.cos(ang), 0.25], dtype=np.float64)
+            up_ref = up_ref / max(float(np.linalg.norm(up_ref)), 1e-9)
+            if coordinate_system.lower() == "rub":
+                back = -fwd
+                right = np.cross(up_ref, back)
+                right = right / max(float(np.linalg.norm(right)), 1e-9)
+                up = np.cross(back, right)
+                rot = np.column_stack([right, up, back])
+            else:
+                right = np.cross(fwd, up_ref)
+                right = right / max(float(np.linalg.norm(right)), 1e-9)
+                down = np.cross(fwd, right)
+                rot = np.column_stack([right, down, fwd])
+            from scipy.spatial.transform import Rotation as _Rot
+            q_xyzw = _Rot.from_matrix(rot).as_quat()  # [x, y, z, w]
+            quat = [round(float(v), 5) for v in q_xyzw]
             cameras.append({
                 "intrinsics": {"fx": fx, "fy": fx, "cx": width / 2.0, "cy": height / 2.0,
                                "width": width, "height": height},

@@ -31,16 +31,20 @@
 
 ## Complex (synthesizer defaults — all overrideable, all cited as ranges)
 
-- Bounds `x,y ∈ [-100,100] m`, `z ∈ [-650,0] m`; grid default
+- Bounds `x,y ∈ [-100,100] m`, `z ∈ [-680,0] m`; grid default
   `(160,160,240)` (override for memory).
+- 5 Multi-level basal structures ("Zed" complexes): stepped 5-level cavities
+  near the pyramid base (`z ∈ [-32,-14] m`) at `(-40,-40,-22)`, `(-40,40,-22)`,
+  `(0,0,-20)`, `(40,-40,-22)`, `(40,40,-22)`, anchored as `Z1`–`Z5` in `khafre-2025-press`.
 - 8 shafts: `x ∈ {-40,+40}`, `y ∈ {-60,-20,+20,+60}`, radius `5.5 m`
-  (claimed "cylindrical"; radius value is our modeling choice, NOT a cited figure),
-  `z ∈ [-550,-15]`, spiral wall modulation
-  `1.1*sin(2π z/28 + 2θ)` (see audit: remodel to swept ramp in K3).
-- 2 chambers: centers `(-40,0,-565)`, `(40,0,-565)`, footprint parameter
-  (default 80), 50 m tall. Upper corridor at `z=-45` linking rows.
+  (claimed "10–12 m diameter"), `z ∈ [-610,-15]`, competing spiral readings
+  (`interior_ramp` walkway shelf vs `exterior_coil` wrapping tube), plus optional
+  `wall_relief_m=1.1` for the `artifact` hypothesis.
+- 2 cubic basal chambers: centers `(-40,0,-590)`, `(40,0,-590)`, true cubes
+  (default `80×80×80 m`, configurable `40..120 m`). Upper corridor at `z=-45`
+  linking rows + deep basal East–West link at `z=-590`.
 - Tier-2 reflectivity: boundary proximity + water-table boost at `z≈-585`
-  + stratigraphy bands + smoothed noise, clipped [0,1].
+  + stratigraphy bands + spiral feature dressing + smoothed noise, clipped `[0,1]`.
 
 ## Posterior sampling / ingestion / degradation sweep / helical cameras
 

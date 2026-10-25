@@ -82,21 +82,56 @@ def mesh_to_bundle(
 
 
 def degrade_for_sweep(mesh: trimesh.Trimesh, levels: List[Tuple[str, float, float]]) -> List[Tuple[str, trimesh.Trimesh]]:
-    """Blur+quantize ladder LiDAR → SAR → GPR → muon.
+    """3D spatial Gaussian blur + voxel-clustering ladder: LiDAR → SAR → GPR → muon.
 
     Level sigmas are modeling choices anchored to validated sensing figures
     (ScanPyramids: ~3 m voids resolvable with ~2 yr muon exposure; ERT/NFC work
     at meter-to-centimeter scale), NOT to the contested orbital-SAR precision
     claims (see claims khafre-2025-press physical_notes)."""
-    out = []
-    v = mesh.vertices.astype(np.float64)
+    from scipy.spatial import cKDTree
+
+    out: List[Tuple[str, trimesh.Trimesh]] = []
+    v = np.asarray(mesh.vertices, dtype=np.float64)
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    if len(v) == 0:
+        return [(name, mesh.copy()) for name, _, _ in levels]
+
+    k_nn = min(24, len(v))
+    tree = cKDTree(v)
+    dists, nn_idx = tree.query(v, k=k_nn)
+    if k_nn == 1:
+        dists = dists[:, None]
+        nn_idx = nn_idx[:, None]
+    median_nn = float(np.median(dists[:, 1])) if k_nn > 1 else 0.0
+
     for name, sigma, qstep in levels:
         dull = v.copy()
-        if sigma > 0:
-            dull = gaussian_filter(dull, sigma=(sigma, 0)) if dull.ndim == 2 else dull
-        if qstep > 0:
-            dull = np.round(dull / qstep) * qstep
-        m = trimesh.Trimesh(vertices=dull, faces=mesh.faces, process=False)
+        if sigma > 0.0:
+            # True 3D spatial Gaussian kernel over k-nearest surface neighbors
+            w = np.exp(-0.5 * (dists / max(float(sigma), 1e-6)) ** 2)
+            w_sum = np.maximum(np.sum(w, axis=1, keepdims=True), 1e-12)
+            w = w / w_sum
+            dull = np.einsum("ij,ijk->ik", w, v[nn_idx])
+        if qstep > 0.0:
+            metric_dull = np.round(dull / qstep) * qstep
+            rms_val = float(np.sqrt(np.mean(np.sum((metric_dull - v) ** 2, axis=-1))))
+            eff_qstep = max(float(qstep), median_nn * (0.85 + 1.5 * float(qstep)))
+            clustered = np.round(dull / eff_qstep) * eff_qstep
+            # Deduplicate vertices sharing a quantized 3D voxel cell and drop degenerate triangles
+            uniq_v, inv = np.unique(clustered, axis=0, return_inverse=True)
+            new_faces = inv[faces]
+            non_deg = (
+                (new_faces[:, 0] != new_faces[:, 1])
+                & (new_faces[:, 1] != new_faces[:, 2])
+                & (new_faces[:, 2] != new_faces[:, 0])
+            )
+            new_faces = new_faces[non_deg]
+            m = trimesh.Trimesh(vertices=uniq_v, faces=new_faces, process=False)
+        else:
+            rms_val = float(np.sqrt(np.mean(np.sum((dull - v) ** 2, axis=-1))))
+            m = trimesh.Trimesh(vertices=dull, faces=faces.copy(), process=False)
+        # Preserve per-original-vertex RMS displacement in meters
+        m.metadata["rms_displacement_m"] = rms_val
         out.append((name, m))
     return out
 

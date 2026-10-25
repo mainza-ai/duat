@@ -95,18 +95,16 @@ def compute_disagreement(rgb_stack: np.ndarray, valid_mask: np.ndarray,
     """Per-pixel mean-channel std normalized by P99 over valid -> [0,1],
     optionally blended with pairwise structural (1-SSIM) divergence."""
     _, std_px = _accelerated_stats(rgb_stack)
-    if np.any(valid_mask):
-        denom = max(float(np.percentile(std_px[valid_mask], 99)), 1.0)
-    else:
-        denom = 1.0
-    norm = np.where(valid_mask, np.clip(std_px / denom, 0.0, 1.0), 0.0).astype(np.float32)
+    eff_mask = valid_mask if np.any(valid_mask) else np.ones_like(valid_mask, dtype=bool)
+    denom = max(float(np.percentile(std_px[eff_mask], 99)), 1.0)
+    norm = np.where(eff_mask, np.clip(std_px / denom, 0.0, 1.0), 0.0).astype(np.float32)
     if structural_weight > 0.0:
-        struct = _structural_divergence(rgb_stack, valid_mask)
-        s_denom = max(float(np.percentile(struct[valid_mask], 99)) if np.any(valid_mask) else 1.0, 1e-6)
-        struct_n = np.where(valid_mask, np.clip(struct / s_denom, 0.0, 1.0), 0.0)
+        struct = _structural_divergence(rgb_stack, eff_mask)
+        s_denom = max(float(np.percentile(struct[eff_mask], 99)), 1e-6)
+        struct_n = np.where(eff_mask, np.clip(struct / s_denom, 0.0, 1.0), 0.0)
         w = float(np.clip(structural_weight, 0.0, 1.0))
         norm = ((1.0 - w) * norm + w * struct_n).astype(np.float32)
-    mean_dis = float(np.mean(norm[valid_mask])) if np.any(valid_mask) else 0.0
+    mean_dis = float(np.mean(norm[eff_mask]))
     return norm, mean_dis
 
 
@@ -115,18 +113,36 @@ def disagreement_to_u8(norm: np.ndarray) -> np.ndarray:
 
 
 def score_next_best_view(disagreement_norm: np.ndarray, valid_mask: np.ndarray,
-                         candidate_depths_m: List[float]) -> Tuple[float, float]:
-    """Pick depth with max local disagreement (synthetic 1-D scan along shaft)."""
+                         candidate_depths_m: List[float],
+                         planar_z: np.ndarray | None = None,
+                         cam_z_m: float = -45.0) -> Tuple[float, float]:
+    """Pick candidate descent depth (m) that maximizes expected information gain
+    (highest local epistemic disagreement in the corresponding depth band)."""
+    if not candidate_depths_m:
+        return round(cam_z_m - 6.0, 1), 60.0
     h, w = disagreement_norm.shape
-    scores = []
-    for z in candidate_depths_m:
-        r0 = int(h * 0.3)
-        band = disagreement_norm[r0:r0 + h // 5, :]
-        scores.append(float(np.mean(band)) if band.size else 0.0)
+    eff_mask = valid_mask if np.any(valid_mask) else np.ones_like(valid_mask, dtype=bool)
+    n_cands = len(candidate_depths_m)
+    scores: List[float] = []
+    for idx, z_cand in enumerate(candidate_depths_m):
+        target_dist = max(abs(float(z_cand) - float(cam_z_m)), 1.0)
+        if planar_z is not None and planar_z.shape == disagreement_norm.shape and np.any(planar_z > 0):
+            band_mask = eff_mask & (np.abs(planar_z - target_dist) <= 3.5)
+            if np.any(band_mask):
+                scores.append(float(np.mean(disagreement_norm[band_mask])))
+                continue
+        # Partition image vertically across candidate horizons
+        band_h = max(h // max(n_cands, 1), 1)
+        r0 = min(idx * band_h, max(h - band_h, 0))
+        r1 = min(r0 + band_h, h)
+        band = disagreement_norm[r0:r1, :]
+        band_m = eff_mask[r0:r1, :]
+        scores.append(float(np.mean(band[band_m])) if np.any(band_m) else float(np.mean(band)))
     best = int(np.argmax(scores)) if scores else 0
-    mean_dis = float(np.mean(disagreement_norm[valid_mask])) if np.any(valid_mask) else 0.0
-    reduction = round(min(92.0, 45.0 + mean_dis * 80.0), 1)
-    return candidate_depths_m[best], reduction
+    best_score = float(scores[best]) if scores else 0.0
+    mean_dis = float(np.mean(disagreement_norm[eff_mask]))
+    reduction = round(min(94.0, max(35.0, 42.0 + 48.0 * max(mean_dis, best_score))), 1)
+    return float(candidate_depths_m[best]), reduction
 
 
 def provenance_manifest(payload: Dict[str, Any]) -> str:

@@ -191,8 +191,63 @@ def test_degradation_sweep_ladder():
     body = r.json()
     assert [lv["name"] for lv in body["levels"]] == ["lidar", "sar_high", "gpr", "muon"]
     rms = [lv["rms_displacement_m"] for lv in body["levels"]]
+    verts = [lv["vertices"] for lv in body["levels"]]
+    faces = [lv["faces"] for lv in body["levels"]]
     assert rms[0] == 0.0 and all(v >= 0.0 for v in rms)
-    assert rms[-1] >= rms[0]
+    assert rms[0] < rms[1] < rms[2] < rms[3]
+    assert verts[0] > verts[1] > verts[2] > verts[3]
+    assert faces[0] > faces[1] > faces[2] > faces[3]
+
+
+def test_zed_structures_and_basal_chambers():
+    meta = client.get("/api/khafre/complex").json()
+    zeds = [p for p in meta["parts"] if p["kind"] == "zed"]
+    chambers = [p for p in meta["parts"] if p["name"].startswith("basal_chamber_")]
+    assert len(zeds) == 5
+    assert len(chambers) == 2
+    assert all(c["size"] == [80.0, 80.0, 80.0] for c in chambers)
+    claim = client.get("/api/claims/khafre-2025-press").json()
+    assert "shaft_diameter_m" in claim["parameters"]
+    anchor_ids = {a["label"] for a in claim["anchors"]}
+    assert {"Z1", "Z2", "Z3", "Z4", "Z5"}.issubset(anchor_ids)
+
+
+def test_bedrock_null_unconditioned_and_nbv_and_datasets():
+    # 1. Unconditioned bedrock_null (force_geometry_on_null=False) has empty_void_pixel_ratio == 1.0
+    r_null = client.post("/api/chisel/ensemble", json={
+        "camera": {"pose": {"position": [-38.5, -20.0, -45.0], "quaternion": [0, 0, 0, 1]}},
+        "hypothesis": "bedrock_null",
+        "force_geometry_on_null": False,
+        "seeds": [7, 42],
+        "mode": "mock",
+    })
+    assert r_null.status_code == 200, r_null.text
+    b_null = r_null.json()
+    assert b_null["empty_void_pixel_ratio"] == 1.0
+    assert "target_z_m" in b_null["next_best_view"]
+    assert b_null["next_best_view"]["predicted_variance_reduction_pct"] > 0
+
+    # 2. Forced geometry on bedrock_null keeps shaft geometry
+    r_forced = client.post("/api/chisel/ensemble", json={
+        "camera": {"pose": {"position": [-38.5, -20.0, -45.0], "quaternion": [0, 0, 0, 1]}},
+        "hypothesis": "bedrock_null",
+        "force_geometry_on_null": True,
+        "seeds": [7, 42],
+        "mode": "mock",
+    })
+    assert r_forced.status_code == 200, r_forced.text
+    assert r_forced.json()["empty_void_pixel_ratio"] < 0.2
+
+    # 3. Reference void dataset raycasting in /api/khafre/depth and /api/chisel/ensemble
+    r_nfc = client.post("/api/khafre/depth", json={
+        "camera": {"width": 320, "height": 180, "fov_deg": 70.0,
+                   "pose": {"position": [0.0, 0.0, 0.0], "quaternion": [0, 0, 0, 1]}},
+        "dataset": "nfc",
+        "out_width": 160,
+        "out_height": 90,
+    })
+    assert r_nfc.status_code == 200, r_nfc.text
+    assert r_nfc.json()["valid_fraction"] > 0.1
 
 
 def test_ensemble_posterior_resample_flag():

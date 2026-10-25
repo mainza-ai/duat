@@ -8,7 +8,7 @@ import * as THREE from "three";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Line, PerspectiveCamera, useGLTF } from "@react-three/drei";
 import { Compass, Video, Cpu, Play, Pause, Layers, Crosshair } from "lucide-react";
-import { renderDepth, decodeGrayscalePng, decodeLogDepthByte, createJob, getJob, cancelJob, fetchPricing, estimateCost } from "../lib/api";
+import { renderDepth, decodeGrayscalePng, decodeLogDepthByte, createJob, getJob, cancelJob, fetchPricing, estimateCost, apiHeaders } from "../lib/api";
 import type { JobRecord, PricingInfo } from "../lib/api";
 
 export interface PosedCameraSpec {
@@ -89,12 +89,16 @@ function generateHelicalTrajectory(numCameras = 32): PosedCameraSpec[] {
   return cameras;
 }
 
-const KhafreShaftCutawayMesh: React.FC<{ showWireframe: boolean; spiral: "interior_ramp" | "exterior_coil" }> = ({ showWireframe, spiral }) => {
+const KhafreShaftCutawayMesh: React.FC<{
+  showWireframe: boolean;
+  spiral: "interior_ramp" | "exterior_coil";
+  heightM?: number;
+}> = ({ showWireframe, spiral, heightM = 110 }) => {
   const geometry = useMemo(() => {
     // Plain cylinder prop (matches the shared shaft model: radius 5.5, no wall
     // modulation — the spiral reads via the step instancing below, not paint).
-    const geo = new THREE.CylinderGeometry(5.5, 5.5, 110, 64, 160, true);
-    geo.translate(0, -110 / 2 - 5, 0);
+    const geo = new THREE.CylinderGeometry(5.5, 5.5, heightM, 64, Math.min(320, Math.round(heightM * 1.5)), true);
+    geo.translate(0, -heightM / 2 - 5, 0);
     const pos = geo.attributes.position;
     const colors = new Float32Array(pos.count * 3);
     for (let i = 0; i < pos.count; i++) {
@@ -108,29 +112,31 @@ const KhafreShaftCutawayMesh: React.FC<{ showWireframe: boolean; spiral: "interi
     geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
     geo.computeVertexNormals();
     return geo;
-  }, []);
+  }, [heightM]);
 
   // Exterior-coil reading (claimants' diagram): helical tube wrapping the
   // shaft at r≈5.8, same 28 m pitch/handedness as the backend coil solid.
+  const spanM = heightM - 22;
   const coilGeometry = useMemo(() => {
     const pts: THREE.Vector3[] = [];
-    const turns = 88 / 28;
-    for (let i = 0; i <= 220; i++) {
-      const s = i / 220;
+    const turns = spanM / 28;
+    const segs = Math.min(480, Math.round(turns * 64));
+    for (let i = 0; i <= segs; i++) {
+      const s = i / segs;
       const theta = -s * turns * Math.PI * 2;
       pts.push(new THREE.Vector3(
-        5.8 * Math.cos(theta), -15 - s * 88, -5.8 * Math.sin(theta)));
+        5.8 * Math.cos(theta), -15 - s * spanM, -5.8 * Math.sin(theta)));
     }
-    return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 220, 0.6, 12, false);
-  }, []);
+    return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), segs, 0.6, 12, false);
+  }, [spanM]);
   const stepsRef = useRef<THREE.InstancedMesh>(null);
-  const stepCount = 48;
+  const stepCount = heightM > 200 ? 180 : 48;
   useEffect(() => {
     const mesh = stepsRef.current;
     if (!mesh) return;
     const dummy = new THREE.Object3D();
     for (let i = 0; i < stepCount; i++) {
-      const y = -15 - (i / (stepCount - 1)) * 88;
+      const y = -15 - (i / (stepCount - 1)) * spanM;
       const theta = ((((y + 15) % 28) + 28) % 28 / 28) * Math.PI * 2;
       dummy.position.set(4.5 * Math.cos(theta), y, -4.5 * Math.sin(theta));
       dummy.lookAt(0, y, 0);
@@ -138,7 +144,7 @@ const KhafreShaftCutawayMesh: React.FC<{ showWireframe: boolean; spiral: "interi
       mesh.setMatrixAt(i, dummy.matrix);
     }
     mesh.instanceMatrix.needsUpdate = true;
-  }, []);
+  }, [stepCount, spanM]);
 
   return (
     <group>
@@ -437,6 +443,25 @@ const DepthRuler: React.FC<{ top: number; bottom: number; step: number; camY: nu
 // Posterior SDF mesh (Z-up frame → Y-up scene with shaft #2 recenter).
 const PosteriorMeshOverlay: React.FC<{ apiBaseUrl?: string; seed: number; spiral: "interior_ramp" | "exterior_coil" }> = ({ apiBaseUrl, seed, spiral }) => {
   const gltf = useGLTF(`${apiBaseUrl ?? ""}/api/khafre/mesh-glb?posterior_seed=${seed}&spiral_style=${spiral}`, true);
+  React.useEffect(() => {
+    gltf.scene.traverse((obj) => {
+      const mesh = obj as unknown as { isMesh?: boolean; material?: unknown; geometry?: THREE.BufferGeometry };
+      if (mesh.isMesh && mesh.geometry) {
+        const flat = mesh.geometry.toNonIndexed();
+        flat.computeVertexNormals();
+        mesh.geometry.dispose();
+        mesh.geometry = flat;
+        mesh.material = new THREE.MeshStandardMaterial({
+          vertexColors: true,
+          side: THREE.DoubleSide,
+          roughness: 0.78,
+          metalness: 0.08,
+          transparent: true,
+          opacity: 0.45,
+        });
+      }
+    });
+  }, [gltf]);
   return (
     <group rotation={[-Math.PI / 2, 0, 0]} position={[40, 0, -20]}>
       <primitive object={gltf.scene} />
@@ -444,13 +469,20 @@ const PosteriorMeshOverlay: React.FC<{ apiBaseUrl?: string; seed: number; spiral
   );
 };
 
-export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: boolean }> = ({ apiBaseUrl, active }) => {
+export interface HelicalDescentProps {
+  apiBaseUrl?: string;
+  active?: boolean;
+  onInspectInLens?: (pose: { position: [number, number, number]; quaternion: [number, number, number, number]; camIdx?: number }) => void;
+}
+
+export const HelicalDescentNavigator: React.FC<HelicalDescentProps> = ({ apiBaseUrl, active, onInspectInLens }) => {
   const [cameras, setCameras] = useState<PosedCameraSpec[]>(() => generateHelicalTrajectory(32));
   const [trajSource, setTrajSource] = useState<"procedural" | "backend">("procedural");
   const [selectedIdx, setSelectedIdx] = useState(4);
   const [isPlaying, setIsPlaying] = useState(false);
   const [firstPersonMode, setFirstPersonMode] = useState(false);
   const [showShaftWireframe, setShowShaftWireframe] = useState(true);
+  const [shaftSpan, setShaftSpan] = useState<"upper110" | "full648">("upper110");
   const [colorMode, setColorMode] = useState<PointCloudColorMode>("relief");
   const [pointSize, setPointSize] = useState(0.18);
   const [maxDisplayZ, setMaxDisplayZ] = useState(40);
@@ -470,25 +502,24 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
 
   React.useEffect(() => {
     if (!apiBaseUrl) return;
-    fetch(`${apiBaseUrl}/api/claims/khafre-2025-press`)
+    fetch(`${apiBaseUrl}/api/claims/khafre-2025-press`, { headers: apiHeaders() })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error("claims"))))
       .then((body: ClaimRecord) => setClaimRec(body))
       .catch(() => setClaimRec(null));
   }, [apiBaseUrl]);
 
   // Claim pins in scene coords (exaggeration-aware; sprite positions scale).
-  // Shaft view shows only nearby pins (y ≥ −130 m); chambers/water live in
-  // the overview where they belong instead of floating in blackness.
+  // Shaft view shows only nearby pins unless full 648 m span or overview is active.
   const pinPositions = useMemo(() => {
     const arr: { label: string; pos: [number, number, number] }[] = [];
     for (const a of claimRec?.anchors ?? []) {
       const [x, y, z] = a.position;
       const pos: [number, number, number] = [x + 40, z * exY, -(y + 20)];
-      if (!overview && pos[1] < -130) continue;
+      if (!overview && shaftSpan === "upper110" && pos[1] < -130) continue;
       arr.push({ label: a.label, pos });
     }
     return arr;
-  }, [claimRec, exY, overview]);
+  }, [claimRec, exY, overview, shaftSpan]);
 
   const flyToAnchor = (label: string) => {
     const pin = pinPositions.find((p) => p.label === label);
@@ -498,7 +529,8 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
     const [ax, ay, az] = pin.pos;
     setFlyTo({ pos: [ax + 15, ay + 10, az + 8], look: [ax, ay, az] });
     setLookTarget([ax, ay, az]);
-  };  const [chainBatches, setChainBatches] = useState(3);
+  };
+  const [chainBatches, setChainBatches] = useState(3);
   const [chainJob, setChainJob] = useState<{ id: string; progress: number; status: string; batches?: number } | null>(null);
   const [armingChain, setArmingChain] = useState(false);
   const [pricing, setPricing] = useState<PricingInfo | null>(null);
@@ -537,8 +569,8 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
   useEffect(() => {
     if (!apiBaseUrl) return;
     let cancelled = false;
-    // Match the demo shaft prop (110 m tall, top at y = -5).
-    fetch(`${apiBaseUrl}/api/khafre/trajectory?num_cameras=32&z_start_m=-15&z_end_m=-105&orbit_radius_m=2.4`)
+    const zEnd = shaftSpan === "full648" ? -600 : -105;
+    fetch(`${apiBaseUrl}/api/khafre/trajectory?num_cameras=32&z_start_m=-15&z_end_m=${zEnd}&orbit_radius_m=2.4`, { headers: apiHeaders() })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error("trajectory"))))
       .then((body) => {
         if (cancelled || !Array.isArray(body.targetCameras)) return;
@@ -567,7 +599,7 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [apiBaseUrl]);
+  }, [apiBaseUrl, shaftSpan]);
   const activeCam = cameras[selectedIdx] || cameras[0];
 
   // Depth request for the active camera: backend pose + shaft frame when the
@@ -675,7 +707,7 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
         <div className="relative flex-1 w-full h-full">
           {/* flat: no tone mapping — authored tier/vertex colors render exactly (data fidelity). */}
           <Canvas flat frameloop={active === false ? "never" : "always"}>
-            <PerspectiveCamera makeDefault fov={55} position={[55, -60, 62]} near={1} far={overview ? 2500 : 400} />
+            <PerspectiveCamera makeDefault fov={55} position={[55, -60, 62]} near={1} far={overview ? 2500 : shaftSpan === "full648" ? 1200 : 400} />
             {!firstPersonMode && (
               <OrbitControls makeDefault target={lookAt} enableDamping dampingFactor={0.08}
                 onStart={() => setFlyTo(null)} />
@@ -698,7 +730,7 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
                 <PosteriorMeshOverlay apiBaseUrl={apiBaseUrl} seed={posteriorSeed} spiral={spiral} />
               </React.Suspense>
             ) : (
-              <KhafreShaftCutawayMesh showWireframe={showShaftWireframe} spiral={spiral} />
+              <KhafreShaftCutawayMesh showWireframe={showShaftWireframe} spiral={spiral} heightM={shaftSpan === "full648" ? 610 : 110} />
             )}
                 <Line points={splinePoints} color="#00F0FF" lineWidth={1.5} transparent opacity={0.45} />
                 {cameras.map((cam) => (<CameraFrustumNode key={cam.index} cam={cam} isSelected={cam.index === selectedIdx} onSelect={(i) => selectCam(i, false)} />))}
@@ -718,8 +750,10 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
             )}
           </Canvas>
           {overview
-            ? <DepthRuler top={150} bottom={-600} step={100} camY={activeCam.position[1]} />
-            : <DepthRuler top={0} bottom={-120} step={20} camY={activeCam.position[1]} />}
+            ? <DepthRuler top={150} bottom={-640} step={100} camY={activeCam.position[1]} />
+            : shaftSpan === "full648"
+              ? <DepthRuler top={0} bottom={-620} step={100} camY={activeCam.position[1]} />
+              : <DepthRuler top={0} bottom={-120} step={20} camY={activeCam.position[1]} />}
         </div>
         <div className="z-10 flex flex-wrap items-center gap-4 px-4 py-3 bg-[#090A0F]/95 border-t border-slate-800 text-xs">
           <button onClick={() => setIsPlaying((p) => !p)}
@@ -752,14 +786,25 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
               <div>Complex Overview</div><div className="text-[10px] text-slate-400 font-normal mt-0.5">Pyramid to water table</div></button>
           </div>
           {!overview && (
-          <div className="flex items-center gap-2 mt-2 text-xs">
-            <span className="text-slate-400">Vertical</span>
-            {[0.5, 1, 2].map((v) => (
-              <button key={v} onClick={() => setExaggeration(v)}
-                title={v === 1 ? "True scale" : `Vertical ×${v} (distorted geometry)`}
-                className={`px-2 py-1 rounded border font-mono text-[10px] ${exY === v ? "bg-slate-800 border-[#00F0FF] text-white" : "bg-[#090A0F] border-slate-800 text-slate-400"}`}>×{v}</button>
-            ))}
-            {exY !== 1 && <span className="font-mono text-[10px] text-[#FFB800]">distorted — POV/fly need 1×</span>}
+          <div className="space-y-2 mt-2 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-slate-400">Shaft span</span>
+              <div className="flex gap-1">
+                {([["upper110", "Upper 110m"], ["full648", "Full 648m"]] as const).map(([sp, lbl]) => (
+                  <button key={sp} onClick={() => setShaftSpan(sp)}
+                    className={`px-2 py-1 rounded border font-mono text-[10px] ${shaftSpan === sp ? "bg-slate-800 border-[#00F0FF] text-white" : "bg-[#090A0F] border-slate-800 text-slate-400"}`}>{lbl}</button>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-slate-400">Vertical</span>
+              {[0.5, 1, 2].map((v) => (
+                <button key={v} onClick={() => setExaggeration(v)}
+                  title={v === 1 ? "True scale" : `Vertical ×${v} (distorted geometry)`}
+                  className={`px-2 py-1 rounded border font-mono text-[10px] ${exY === v ? "bg-slate-800 border-[#00F0FF] text-white" : "bg-[#090A0F] border-slate-800 text-slate-400"}`}>×{v}</button>
+              ))}
+              {exY !== 1 && <span className="font-mono text-[10px] text-[#FFB800]">distorted — POV/fly need 1×</span>}
+            </div>
           </div>
           )}
         </div>
@@ -786,6 +831,10 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
             <label className="flex items-center justify-between cursor-pointer pt-2 border-t border-slate-800">
               <span className="text-slate-300">Show SAR Shaft Wireframe</span>
               <input type="checkbox" checked={showShaftWireframe} onChange={(e) => setShowShaftWireframe(e.target.checked)} className="accent-[#00F0FF]" />
+            </label>
+            <label className="flex items-center justify-between cursor-pointer pt-2 border-t border-slate-800">
+              <span className="text-slate-300">Show Posterior SDF Mesh (GLB)</span>
+              <input type="checkbox" checked={showPosteriorMesh} onChange={(e) => setShowPosteriorMesh(e.target.checked)} className="accent-[#34D399]" />
             </label>
             <label className="flex items-center justify-between cursor-pointer pt-2 border-t border-slate-800">
               <span className="text-slate-300">Accumulate visited frames</span>
@@ -836,6 +885,18 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
             <div className="flex justify-between"><span className="text-slate-500">QUATERNION:</span><span>[{activeCam.quaternion.map((q) => q.toFixed(2)).join(", ")}]</span></div>
             <div className="flex justify-between pt-1.5 border-t border-slate-800"><span className="text-[#34D399]">ENSEMBLE DISAGREEMENT:</span>
               <span className="text-white font-semibold">{Math.round(activeCam.disagreementScore * 100)}%</span></div>
+            {onInspectInLens && (
+              <button
+                onClick={() => {
+                  const back = backendCams?.[activeCam.index];
+                  const pos: [number, number, number] = back?.extrinsics?.position ?? [activeCam.position[0] - 40, -20 - activeCam.position[2], activeCam.position[1]];
+                  const quat: [number, number, number, number] = back?.extrinsics?.quaternion ?? [0, 0, 0, 1];
+                  onInspectInLens({ position: pos, quaternion: quat, camIdx: activeCam.index });
+                }}
+                className="w-full mt-2 px-3 py-1.5 rounded bg-[#00F0FF]/15 border border-[#00F0FF]/50 text-[#00F0FF] font-sans font-medium text-xs hover:bg-[#00F0FF]/25 transition">
+                Inspect Pose in Epistemic Lens →
+              </button>
+            )}
           </div>
         </div>
         <div className="mt-auto p-3.5 rounded-lg bg-emerald-950/30 border border-emerald-700/40 text-xs">

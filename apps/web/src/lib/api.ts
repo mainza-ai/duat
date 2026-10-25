@@ -6,12 +6,42 @@ export interface AtlasCamera {
 }
 
 export type RunMode = "mock" | "live";
+export type DatasetKind = "khafre" | "nfc" | "big-void" | "uploaded_mesh";
+export type InstrumentRig = "borescope_led" | "drop_flare" | "structured_laser";
+
+const OPERATOR_KEY_STORAGE = "duat_operator_key";
+
+export function getOperatorKey(): string {
+  try {
+    return localStorage.getItem(OPERATOR_KEY_STORAGE) || (import.meta.env.VITE_OPERATOR_API_KEY as string) || "";
+  } catch {
+    return (import.meta.env.VITE_OPERATOR_API_KEY as string) || "";
+  }
+}
+
+export function setOperatorKey(key: string): void {
+  try {
+    if (key.trim()) localStorage.setItem(OPERATOR_KEY_STORAGE, key.trim());
+    else localStorage.removeItem(OPERATOR_KEY_STORAGE);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function apiHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const headers: Record<string, string> = { ...extra };
+  const key = getOperatorKey();
+  if (key) headers["X-Duat-Key"] = key;
+  return headers;
+}
 
 export interface EnsembleRequest {
   camera: { width?: number; height?: number; fov_deg?: number; coordinate_system?: "rub" | "rdf";
     pose: { position: [number, number, number]; quaternion: [number, number, number, number] } };
+  dataset?: DatasetKind;
   hypothesis?: "megalithic" | "karst" | "artifact" | "bedrock_null";
-  instrument_rig?: "borescope_led" | "drop_flare" | "structured_laser";
+  force_geometry_on_null?: boolean;
+  instrument_rig?: InstrumentRig;
   seeds?: number[];
   voxel_size?: number;
   sensor_noise_sigma_m?: number;
@@ -50,7 +80,7 @@ export interface EnsembleResponse {
 export async function postEnsemble(baseUrl: string, req: EnsembleRequest): Promise<EnsembleResponse> {
   const res = await fetch(`${baseUrl}/api/chisel/ensemble`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(req),
   });
   if (!res.ok) throw new Error(`ensemble failed: ${res.status} ${await res.text()}`);
@@ -71,7 +101,7 @@ export interface JobRecord {
 }
 
 export async function fetchPricing(baseUrl: string): Promise<PricingInfo> {
-  const res = await fetch(`${baseUrl}/api/pricing`);
+  const res = await fetch(`${baseUrl}/api/pricing`, { headers: apiHeaders() });
   if (!res.ok) throw new Error("pricing unavailable");
   return res.json();
 }
@@ -79,7 +109,7 @@ export async function fetchPricing(baseUrl: string): Promise<PricingInfo> {
 export async function createJob(baseUrl: string, kind: "ensemble" | "chain", request: EnsembleRequest): Promise<{ id: string; status: string; deduplicated: boolean }> {
   const res = await fetch(`${baseUrl}/api/jobs`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ kind, request }),
   });
   if (!res.ok) throw new Error(`job create failed: ${res.status} ${await res.text()}`);
@@ -87,20 +117,76 @@ export async function createJob(baseUrl: string, kind: "ensemble" | "chain", req
 }
 
 export async function getJob(baseUrl: string, id: string): Promise<JobRecord> {
-  const res = await fetch(`${baseUrl}/api/jobs/${id}`);
+  const res = await fetch(`${baseUrl}/api/jobs/${id}`, { headers: apiHeaders() });
   if (!res.ok) throw new Error(`job fetch failed: ${res.status}`);
   return res.json();
 }
 
 export async function cancelJob(baseUrl: string, id: string): Promise<JobRecord> {
-  const res = await fetch(`${baseUrl}/api/jobs/${id}/cancel`, { method: "POST" });
+  const res = await fetch(`${baseUrl}/api/jobs/${id}/cancel`, { method: "POST", headers: apiHeaders() });
   if (!res.ok) throw new Error(`job cancel failed: ${res.status}`);
   return res.json();
 }
 
 export async function listJobs(baseUrl: string, limit = 20): Promise<{ jobs: JobRecord[] }> {
-  const res = await fetch(`${baseUrl}/api/jobs?limit=${limit}`);
+  const res = await fetch(`${baseUrl}/api/jobs?limit=${limit}`, { headers: apiHeaders() });
   if (!res.ok) throw new Error(`job list failed: ${res.status}`);
+  return res.json();
+}
+
+export interface DegradationLevel {
+  name: string;
+  blur_sigma_m: number;
+  quant_m: number;
+  vertices: number;
+  faces: number;
+  rms_displacement_m: number;
+}
+
+export interface DegradationResponse {
+  base_vertices: number;
+  base_faces: number;
+  levels: DegradationLevel[];
+}
+
+export async function fetchDegradation(baseUrl: string): Promise<DegradationResponse> {
+  const res = await fetch(`${baseUrl}/api/khafre/degradation`, { headers: apiHeaders() });
+  if (!res.ok) throw new Error(`degradation fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export interface ReferenceVoidInfo {
+  kind: string;
+  dims_m: [number, number, number];
+  claim_id: string;
+  grid_shape: [number, number, number];
+  void_fraction: number;
+  sensor_uncertainty_m: number;
+}
+
+export async function fetchReferenceVoids(baseUrl: string): Promise<{ voids: ReferenceVoidInfo[] }> {
+  const res = await fetch(`${baseUrl}/api/khafre/reference-voids`, { headers: apiHeaders() });
+  if (!res.ok) throw new Error(`reference voids fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export interface MeshUploadResponse {
+  grid_shape: [number, number, number];
+  bounds_min_m: [number, number, number];
+  bounds_max_m: [number, number, number];
+  void_fraction: number;
+  mean_reflectivity: number;
+}
+
+export async function uploadMesh(baseUrl: string, file: File): Promise<MeshUploadResponse> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch(`${baseUrl}/api/khafre/mesh`, {
+    method: "POST",
+    headers: apiHeaders(),
+    body: fd,
+  });
+  if (!res.ok) throw new Error(`mesh upload failed: ${res.status} ${await res.text()}`);
   return res.json();
 }
 
@@ -235,13 +321,15 @@ export async function renderDepth(
   camera: EnsembleRequest["camera"],
   outW = 160, outH = 90, seed = 7,
   shaftCenter: [number, number] = [-40, -20],
-  spiralStyle: "interior_ramp" | "exterior_coil" = "interior_ramp"
+  spiralStyle: "interior_ramp" | "exterior_coil" = "interior_ramp",
+  dataset: DatasetKind = "khafre",
+  hypothesis: "megalithic" | "karst" | "artifact" | "bedrock_null" = "megalithic"
 ): Promise<DepthRenderResponse> {
   const res = await fetch(`${baseUrl}/api/khafre/depth`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ camera, out_width: outW, out_height: outH, seed,
-      shaft_center_xy: shaftCenter, spiral_style: spiralStyle }),
+      shaft_center_xy: shaftCenter, spiral_style: spiralStyle, dataset, hypothesis }),
   });
   if (!res.ok) throw new Error(`depth render failed: ${res.status}`);
   return res.json();

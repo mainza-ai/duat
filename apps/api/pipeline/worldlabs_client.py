@@ -54,7 +54,7 @@ def _load_dotenv_minimal() -> None:
 
 _load_dotenv_minimal()
 
-DEFAULT_BASE_URL = "https://atlas-beta.worldlabs.ai/api/v2"
+DEFAULT_BASE_URL = "https://api.atlas-beta.worldlabs.ai/api/v2"
 
 
 # ----------------------------------------------------------------------
@@ -148,6 +148,8 @@ class ChiselRunResult:
 
 
 class WorldLabsAtlasClient:
+    DEFAULT_BASE_URL = DEFAULT_BASE_URL
+
     def __init__(
         self,
         api_key: Optional[str] = None,
@@ -240,6 +242,16 @@ class WorldLabsAtlasClient:
     async def upload_depth_asset(self, png_bytes: bytes, filename: str = "depth.png") -> Dict[str, Any]:
         return await self.create_asset_inline(png_bytes, filename)
 
+    async def create_read_url(self, asset_id: str) -> Dict[str, Any]:
+        """Mint a fresh short-lived readUrl for a project asset (POST /assets/{asset}:createReadUrl)."""
+        if self.mock_mode:
+            return {"assetId": asset_id, "readUrl": f"https://mock.worldlabs.local/assets/{asset_id}", "expiresAt": None}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await _request_json(
+                client, "POST", f"{self.base_url}/assets/{asset_id}:createReadUrl",
+                headers=self._headers(), payload={})
+            return resp.json()
+
     # ---------------- task ----------------
     def _camera(self, cam: Dict[str, Any]) -> Dict[str, Any]:
         if "intrinsics" in cam and "extrinsics" in cam:
@@ -267,6 +279,7 @@ class WorldLabsAtlasClient:
         voxel_size: float = 0.25,
         voxel_grid_orientation: str = "world",
         seed: int = 7,
+        num_steps: Optional[int] = None,
         hypothesis: str = "megalithic",
         source_frames: Optional[List[Dict[str, Any]]] = None,
         enhance_prompt: bool = True,
@@ -316,22 +329,28 @@ class WorldLabsAtlasClient:
                 "camera": ctx_cam,
                 "depth": {"logDepthAsset": {"assetId": asset_id}, "zMin": float(z_min), "zMax": float(z_max)},
             }]
+        model_params: Dict[str, Any] = {"seed": int(seed)}
+        if num_steps is not None:
+            model_params["numSteps"] = int(num_steps)
         payload: Dict[str, Any] = {
             "contextFrames": context_frames,
             "sourceFrames": srcs,
             "targetCameras": tgts,
             "prompt": prompt,
             "enhancePrompt": bool(enhance_prompt),
-            "modelParameters": {"seed": int(seed)},
+            "modelParameters": model_params,
         }
         if voxel_size and voxel_size > 0:
             payload["voxelSize"] = float(voxel_size)
             payload["voxelGridOrientation"] = voxel_grid_orientation
         if return_depth:
-            payload["modelParameters"]["returnDepth"] = True
+            # Normative OpenAPI 3.1.0: returnDepth is a top-level field on
+            # AtlasChiselRequest; AtlasChiselModelParameters forbids extra keys.
+            payload["returnDepth"] = True
 
         req_hash = hashlib.sha256(
             json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+        effective_key = idempotency_key or f"duat-{req_hash[:48]}"
 
         if self.mock_mode:
             await asyncio.sleep(0.05)
@@ -344,15 +363,16 @@ class WorldLabsAtlasClient:
                                    request_hash=req_hash, prompt_used=prompt)
 
         async with httpx.AsyncClient(timeout=self.timeout_s) as client:
-            # Submit once with the caller's stable idempotency key: transport
+            # Submit once with a stable idempotency key: transport
             # retries inside _request_json reuse it, so retries can't double-bill.
             submit = await _request_json(
                 client, "POST", f"{self.base_url}/tasks:atlasChisel",
-                headers=self._headers(idempotency_key), payload=payload, attempts=3)
+                headers=self._headers(effective_key), payload=payload, attempts=3)
             op = submit.json()
             op_id = op.get("id") or op.get("name", "").split("/")[-1]
             if op.get("done") and not op.get("error"):
-                return await self._decode_live_result(client, op, seed, hypothesis, req_hash, op_id, prompt)
+                return await self._decode_live_result(
+                    client, op, seed, hypothesis, req_hash, op_id, prompt, z_min=z_min, z_max=z_max)
             # poll: try :wait first (best-effort, may 504 past the 60 s LB cap),
             # then GET loop with backoff + jitter.
             try:
@@ -364,7 +384,8 @@ class WorldLabsAtlasClient:
                     if wop.get("done"):
                         if wop.get("error"):
                             raise AtlasError("FAILED", f"atlasChisel failed: {wop['error']}")
-                        return await self._decode_live_result(client, wop, seed, hypothesis, req_hash, op_id, prompt)
+                        return await self._decode_live_result(
+                            client, wop, seed, hypothesis, req_hash, op_id, prompt, z_min=z_min, z_max=z_max)
             except (httpx.TimeoutException, httpx.TransportError, AtlasError):
                 pass  # wait is best-effort; polling continues below
             for attempt in range(90):
@@ -381,7 +402,8 @@ class WorldLabsAtlasClient:
                 if status.get("done"):
                     if status.get("error"):
                         raise AtlasError("FAILED", f"atlasChisel task failed: {status['error']}")
-                    return await self._decode_live_result(client, status, seed, hypothesis, req_hash, op_id, prompt)
+                    return await self._decode_live_result(
+                        client, status, seed, hypothesis, req_hash, op_id, prompt, z_min=z_min, z_max=z_max)
             raise AtlasError("TIMEOUT", f"Operation {op_id} timed out.")
 
     async def _submit_and_await(
@@ -442,12 +464,13 @@ class WorldLabsAtlasClient:
         """Submit + await a task; returns (op_id, request_hash, terminal status)."""
         req_hash = hashlib.sha256(
             json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+        effective_key = idempotency_key or f"duat-{req_hash[:48]}"
         if self.mock_mode:
             await asyncio.sleep(0.05)
             return f"op_mock_{req_hash[:12]}", req_hash, {"done": True, "mock": True, "response": {}}
         async with httpx.AsyncClient(timeout=self.timeout_s) as client:
             op_id, status = await self._submit_and_await(
-                client, task_path, payload, idempotency_key, task_name)
+                client, task_path, payload, effective_key, task_name)
             return op_id, req_hash, status
 
     @dataclass
@@ -566,7 +589,9 @@ class WorldLabsAtlasClient:
 
     async def _decode_live_result(self, client: httpx.AsyncClient, status: Dict[str, Any],
                                   seed: int, hypothesis: str, req_hash: str, op_id: str,
-                                  prompt: str) -> ChiselRunResult:
+                                  prompt: str, z_min: float = 0.5, z_max: float = 40.0) -> ChiselRunResult:
+        from .depth_renderer import decode_log_depth_png, read_planar_exr_bytes
+
         resp_block = status.get("response") or status.get("result") or {}
         frames_meta = resp_block.get("frames", [])
         prompt_used = resp_block.get("promptUsed", prompt)
@@ -586,21 +611,48 @@ class WorldLabsAtlasClient:
                         rgbs.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
                 except (httpx.TimeoutException, httpx.TransportError, AtlasError) as exc:
                     raise AtlasError("SERVER", f"Output download failed: {exc}")
-            d = (fr.get("depth") or {})
+            d = (fr.get("depth") or fr)
+            log_meta = d.get("logDepthAsset") or {}
+            d_zmin = float(d.get("zMin") or log_meta.get("zMin") or z_min)
+            d_zmax = float(d.get("zMax") or log_meta.get("zMax") or z_max)
+            decoded_depth: Optional[np.ndarray] = None
             for key in ("depthAsset", "logDepthAsset"):
-                dasset = d.get(key) or {}
+                dasset = d.get(key) or fr.get(key) or {}
                 durl = (dasset or {}).get("url")
-                if durl:
+                if durl and decoded_depth is None:
                     try:
-                        rr = await client.get(durl)
+                        rr = await client.get(durl, timeout=60.0)
                         rr.raise_for_status()
-                        if key == "logDepthAsset":
-                            arr = np.frombuffer(rr.content, dtype=np.uint8)
+                        raw_bytes = rr.content
+                        if raw_bytes.startswith(b"\x89PNG"):
+                            arr = np.frombuffer(raw_bytes, dtype=np.uint8)
                             gray = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
                             if gray is not None:
-                                depths.append(gray.astype(np.float32))
+                                decoded_depth = decode_log_depth_png(gray, d_zmin, d_zmax)
+                        else:
+                            decoded_depth = read_planar_exr_bytes(raw_bytes)
                     except Exception:
                         pass
+            if decoded_depth is not None:
+                casset = d.get("confidenceAsset") or {}
+                curl = (casset or {}).get("url")
+                if curl:
+                    try:
+                        cr = await client.get(curl, timeout=60.0)
+                        cr.raise_for_status()
+                        cbytes = cr.content
+                        if cbytes.startswith(b"\x89PNG"):
+                            carr = np.frombuffer(cbytes, dtype=np.uint8)
+                            cgray = cv2.imdecode(carr, cv2.IMREAD_GRAYSCALE)
+                            if cgray is not None and cgray.shape == decoded_depth.shape:
+                                decoded_depth = np.where(cgray > 0, decoded_depth, 0.0).astype(np.float32)
+                        else:
+                            conf_exr = read_planar_exr_bytes(cbytes)
+                            if conf_exr.shape == decoded_depth.shape:
+                                decoded_depth = np.where(conf_exr > 0, decoded_depth, 0.0).astype(np.float32)
+                    except Exception:
+                        pass
+                depths.append(decoded_depth)
         return ChiselRunResult(seed=seed, hypothesis=hypothesis, rgb_frames=rgbs,
                                predicted_depths=depths, cameras=cams,
                                operation_id=str(op_id), request_hash=req_hash, prompt_used=prompt_used)
@@ -613,16 +665,30 @@ class WorldLabsAtlasClient:
         rng = np.random.default_rng(seed)
         h, w = log_depth_png.shape[:2]
         valid = log_depth_png > 0
-        planar_z = decode_log_depth_png(log_depth_png, z_min, z_max)
+        unconditioned = not bool(np.any(valid))
+        if unconditioned:
+            # 100% 0-masked depth (e.g. bedrock_null baseline): no geometric conditioning.
+            # Each seed synthesizes an unanchored solid limestone face with high prior variance.
+            eff_valid = np.ones((h, w), dtype=bool)
+            base_z = float(z_min + 2.5 + rng.uniform(-0.9, 0.9))
+            undulation = cv2.GaussianBlur(rng.normal(0.0, 0.85, size=(h, w)).astype(np.float32), (15, 15), 4.0)
+            planar_z = np.clip(base_z + undulation, z_min, z_max).astype(np.float32)
+        else:
+            eff_valid = valid
+            planar_z = decode_log_depth_png(log_depth_png, z_min, z_max)
         logn = np.zeros_like(planar_z)
-        logn[valid] = np.log(np.clip(planar_z[valid], z_min, z_max) / z_min) / max(np.log(z_max / z_min), 1e-9)
+        logn[eff_valid] = np.log(np.clip(planar_z[eff_valid], z_min, z_max) / z_min) / max(np.log(z_max / z_min), 1e-9)
         dz_dx = cv2.Sobel(planar_z, cv2.CV_32F, 1, 0, ksize=3)
         dz_dy = cv2.Sobel(planar_z, cv2.CV_32F, 0, 1, ksize=3)
         normal_z = 1.0 / np.sqrt(dz_dx**2 + dz_dy**2 + 1.0)
-        falloff = np.where(valid, np.clip(1.35 - 0.85 * logn, 0.08, 1.0), 0.0)
+        falloff = np.where(eff_valid, np.clip(1.35 - 0.85 * logn, 0.08, 1.0), 0.0)
         grain = cv2.GaussianBlur(rng.normal(0.0, 1.0, size=(h, w)).astype(np.float32), (5, 5), 1.2)
         edge = np.hypot(dz_dx, dz_dy)
-        var = np.sin(planar_z * 2.5 + seed * 1.7) * np.clip(edge * 0.4, 0.0, 0.35)
+        if unconditioned:
+            yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+            var = 0.28 * np.sin(xx * 0.07 + seed * 1.9) * np.cos(yy * 0.07 - seed * 1.3)
+        else:
+            var = np.sin(planar_z * 2.5 + seed * 1.7) * np.clip(edge * 0.4, 0.0, 0.35)
         shading = np.clip(normal_z * 0.85 + grain * 0.08 + var, 0.0, 1.2) * falloff
         base = {"megalithic": np.array([182.0, 156.0, 120.0]),
                 "karst": np.array([98.0, 142.0, 155.0]),
@@ -630,7 +696,7 @@ class WorldLabsAtlasClient:
                     hypothesis, np.array([85.0, 200.0, 235.0]))
         rgb = np.zeros((h, w, 3), dtype=np.uint8)
         for c in range(3):
-            rgb[..., c] = np.where(valid, np.clip(base[c] * shading, 0, 255), 0).astype(np.uint8)
+            rgb[..., c] = np.where(eff_valid, np.clip(base[c] * shading, 0, 255), 0).astype(np.uint8)
         return [rgb.copy() for _ in range(num_targets)], [planar_z.copy() for _ in range(num_targets)]
 
     # ---------------- chained descent ----------------

@@ -30,7 +30,7 @@ class ShaftParams:
     wall_relief_m: float = 0.0      # legacy whole-wall undulation (artifact variant)
     wall_relief_lobes: int = 2
     z_top_m: float = -15.0
-    z_bottom_m: float = -550.0
+    z_bottom_m: float = -610.0
     handedness: int = 1             # +1 descending with CCW angle
     # Competing spiral readings of the same anomaly. The claimants' own diagram
     # draws the spiral as an EXTERNAL coil wrapping each shaft; the interior

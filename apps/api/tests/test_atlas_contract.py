@@ -164,3 +164,69 @@ def test_done_error_maps_to_failed():
         assert exc.code == "FAILED"
     else:
         raise AssertionError("expected AtlasError")
+
+
+@respx.mock
+def test_top_level_return_depth_and_auto_idempotency_and_exr_decode():
+    import json as _json
+    from apps.api.pipeline.depth_renderer import encode_log_depth_png, write_planar_exr_bytes
+
+    assert WorldLabsAtlasClient.DEFAULT_BASE_URL == "https://api.atlas-beta.worldlabs.ai/api/v2"
+    respx.post(f"{BASE}/assets").mock(return_value=httpx.Response(200, json={"asset": {"assetId": "a1"}}))
+    chisel_route = respx.post(f"{BASE}/tasks:atlasChisel").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "op_exr",
+                "done": True,
+                "response": {
+                    "frames": [
+                        {
+                            "imageAsset": {"url": "https://cdn/x/img.png"},
+                            "depthAsset": {"url": "https://cdn/x/depth.exr"},
+                            "confidenceAsset": {"url": "https://cdn/x/conf.png"},
+                            "camera": CAM,
+                        },
+                        {
+                            "imageAsset": {"url": "https://cdn/x/img.png"},
+                            "logDepthAsset": {"url": "https://cdn/x/logdepth.png", "zMin": 0.5, "zMax": 40.0},
+                            "camera": CAM,
+                        },
+                    ],
+                    "promptUsed": "p",
+                },
+            },
+        )
+    )
+    exr_gt = np.full((4, 4), 12.5, dtype=np.float32)
+    exr_bytes = write_planar_exr_bytes(exr_gt)
+    conf_gray = np.full((4, 4), 255, dtype=np.uint8)
+    conf_gray[0, 0] = 0
+    conf_png = cv2.imencode(".png", conf_gray)[1].tobytes()
+    log_u8 = encode_log_depth_png(np.full((4, 4), 8.0, dtype=np.float32), z_min=0.5, z_max=40.0)
+    log_png = cv2.imencode(".png", log_u8)[1].tobytes()
+
+    respx.get("https://cdn/x/img.png").mock(return_value=httpx.Response(200, content=RGB_PNG))
+    respx.get("https://cdn/x/depth.exr").mock(return_value=httpx.Response(200, content=exr_bytes))
+    respx.get("https://cdn/x/conf.png").mock(return_value=httpx.Response(200, content=conf_png))
+    respx.get("https://cdn/x/logdepth.png").mock(return_value=httpx.Response(200, content=log_png))
+    respx.post(f"{BASE}/assets/a1:createReadUrl").mock(
+        return_value=httpx.Response(200, json={"downloadUrl": "https://cdn/x/read.png"})
+    )
+
+    client = _client()
+    res = asyncio.run(client.run_atlas_chisel(**_kw(return_depth=True, target_cameras=[CAM, CAM])))
+    sent_req = chisel_route.calls[0].request
+    sent_json = _json.loads(sent_req.content)
+    assert sent_json.get("returnDepth") is True
+    assert "returnDepth" not in sent_json.get("modelParameters", {})
+    assert sent_req.headers.get("Idempotency-Key", "").startswith("duat-")
+
+    assert len(res.predicted_depths) == 2
+    assert float(res.predicted_depths[0][0, 0]) == 0.0  # masked by zero confidence
+    assert abs(float(res.predicted_depths[0][1, 1]) - 12.5) < 1e-3
+    assert abs(float(res.predicted_depths[1][1, 1]) - 8.0) < 0.25
+
+    read_info = asyncio.run(client.create_read_url("a1"))
+    assert read_info["downloadUrl"] == "https://cdn/x/read.png"
+

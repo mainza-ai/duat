@@ -164,6 +164,32 @@ def get_operation(op_id: str) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
 
+def list_operations(job_id: Optional[str] = None, status: Optional[str] = None) -> List[Dict[str, Any]]:
+    with _lock, _connect() as con:
+        clauses, params = [], []
+        if job_id is not None:
+            clauses.append("job_id=?")
+            params.append(job_id)
+        if status is not None:
+            clauses.append("status=?")
+            params.append(status)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = con.execute(f"SELECT * FROM operations{where} ORDER BY created_ts DESC", tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def recover_orphaned_jobs() -> int:
+    """Mark any jobs left in queued/running state from a previous crashed process
+    as interrupted so operators can inspect or resume them cleanly."""
+    now = _now()
+    with _lock, _connect() as con:
+        cur = con.execute(
+            "UPDATE jobs SET status='failed', error_json=?, updated_ts=? WHERE status IN ('queued','running')",
+            (json.dumps({"code": "ORPHANED_ON_RESTART", "message": "Server restarted while job was in flight; use resume_hint or resubmit."}), now),
+        )
+        return int(cur.rowcount or 0)
+
+
 # ---------------- ensembles ----------------
 def record_ensemble(provenance_sha256: str, manifest: Dict[str, Any]) -> None:
     with _lock, _connect() as con:
