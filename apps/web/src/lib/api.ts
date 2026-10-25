@@ -20,6 +20,12 @@ export interface EnsembleRequest {
   mode?: RunMode;
   structural_weight?: number;
   posterior_resample?: boolean;
+  chain_batches?: number;
+  chain_targets?: number;
+  return_depth?: boolean;
+  start_batch?: number;
+  resume_source_asset_id?: string | null;
+  resume_source_camera?: Record<string, unknown> | null;
 }
 
 export interface EnsembleResponse {

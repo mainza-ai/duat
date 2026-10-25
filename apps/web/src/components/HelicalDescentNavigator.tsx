@@ -8,7 +8,8 @@ import * as THREE from "three";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Line, PerspectiveCamera } from "@react-three/drei";
 import { Compass, Video, Cpu, Play, Pause, Layers, Crosshair } from "lucide-react";
-import { renderDepth, decodeGrayscalePng, decodeLogDepthByte } from "../lib/api";
+import { renderDepth, decodeGrayscalePng, decodeLogDepthByte, createJob, getJob, cancelJob, fetchPricing, estimateCost } from "../lib/api";
+import type { JobRecord, PricingInfo } from "../lib/api";
 
 export interface PosedCameraSpec {
   index: number; width: number; height: number; fx: number; fy: number; cx: number; cy: number;
@@ -228,7 +229,38 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
   const [backendCams, setBackendCams] = useState<any[] | null>(null);
   const [depthSrc, setDepthSrc] = useState<"live" | "pending" | "error">("pending");
   const [flyTo, setFlyTo] = useState<FlyTarget | null>(null);
-  const [lookAt, setLookAt] = useState<[number, number, number]>([0, -36, 0]);
+  const [lookAt, setLookAt] = useState<[number, number, number]>([0, -60, 0]);
+  const [chainHyp, setChainHyp] = useState<"megalithic" | "karst" | "artifact">("megalithic");
+  const [chainBatches, setChainBatches] = useState(3);
+  const [chainJob, setChainJob] = useState<{ id: string; progress: number; status: string; batches?: number } | null>(null);
+  const [armingChain, setArmingChain] = useState(false);
+  const [pricing, setPricing] = useState<PricingInfo | null>(null);
+
+  React.useEffect(() => {
+    if (!apiBaseUrl) return;
+    fetchPricing(apiBaseUrl).then(setPricing).catch(() => setPricing(null));
+  }, [apiBaseUrl]);
+
+  const runChain = async (live: boolean) => {
+    if (!apiBaseUrl) return;
+    setChainJob(null);
+    try {
+      const { id } = await createJob(apiBaseUrl, "chain", {
+        camera: { pose: { position: [-38.5, -20.0, -45.0], quaternion: [0, 0, 0, 1] } },
+        hypothesis: chainHyp, instrument_rig: "drop_flare", seeds: [7],
+        mode: live ? "live" : "mock", chain_batches: chainBatches, chain_targets: 2,
+      });
+      for (let i = 0; i < 240; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const job: JobRecord = await getJob(apiBaseUrl, id);
+        setChainJob({ id, progress: job.progress, status: job.status,
+          batches: (job.result as { batches?: unknown[] } | undefined)?.batches?.length });
+        if (job.status === "done" || job.status === "failed" || job.status === "cancelled") break;
+      }
+    } catch {
+      setChainJob({ id: "error", progress: 0, status: "failed" });
+    }
+  };
 
   // Prefer the backend's helical trajectory; fall back to procedural.
   // Backend cameras are Z-up world frame around the real shaft center;
@@ -313,11 +345,16 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
             <span>SHAFT #2 (WEST ROW)</span>
             <span className="text-slate-500">SRC:{trajSource === "backend" ? "API" : "LOCAL"}</span>
             <span className="text-slate-500">PTS:{depthSrc === "live" ? "MEASURED" : depthSrc === "pending" ? "…" : "OFFLINE"}</span>
-            <span className="text-[#00F0FF]">POSE #{activeCam.index + 1}/32 (DEPTH: {activeCam.position[1]}m){activeCam.isNextBestView ? " · NBV" : ""}</span></div>
+            <span className="text-[#00F0FF]">POSE #{activeCam.index + 1}/32 (DEPTH: {activeCam.position[1].toFixed(1)}m){activeCam.isNextBestView ? " · NBV" : ""}</span>
+            <span className="hidden xl:flex items-center gap-2 text-slate-500">
+              <span><span className="text-slate-400">●</span> all</span>
+              <span><span className="text-[#00F0FF]">●</span> selected</span>
+              <span><span className="text-[#34D399]">●</span> NBV</span>
+            </span></div>
         </div>
         <div className="relative flex-1 w-full h-full">
           <Canvas frameloop={active === false ? "never" : "always"}>
-            <PerspectiveCamera makeDefault fov={65} position={[22, -32, 26]} near={0.1} far={500} />
+            <PerspectiveCamera makeDefault fov={55} position={[55, -60, 62]} near={0.1} far={800} />
             {!firstPersonMode && (
               <OrbitControls makeDefault target={lookAt} enableDamping dampingFactor={0.08}
                 onStart={() => setFlyTo(null)} />
@@ -342,7 +379,7 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
             <span className="font-mono text-slate-400 whitespace-nowrap">CAM #{selectedIdx + 1}</span>
             <input type="range" min={0} max={cameras.length - 1} value={selectedIdx}
               onChange={(e) => selectCam(parseInt(e.target.value, 10), false)} className="w-full accent-[#00F0FF]" />
-            <span className="font-mono text-[#00F0FF] whitespace-nowrap">Z = {activeCam.position[1]}m</span></div>
+            <span className="font-mono text-[#00F0FF] whitespace-nowrap">Z = {activeCam.position[1].toFixed(1)}m</span></div>
           <button onClick={() => selectCam(18, true)}
             className="px-2.5 py-1.5 rounded border border-[#34D399] bg-[#34D399]/15 text-[#34D399] font-mono text-[11px] hover:bg-[#34D399]/25 transition">Jump to NBV (#19){flyTo ? " · flying…" : ""}</button>
         </div>
@@ -389,7 +426,7 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
           <div className="bg-[#090A0F] p-3.5 rounded-lg border border-slate-800 font-mono text-[11px] space-y-1.5 text-slate-300">
             <div className="flex justify-between"><span className="text-slate-500">RESOLUTION:</span><span>{activeCam.width} × {activeCam.height} (16:9)</span></div>
             <div className="flex justify-between"><span className="text-slate-500">FOCAL (fx, fy):</span><span>({activeCam.fx}, {activeCam.fy}) px</span></div>
-            <div className="flex justify-between"><span className="text-slate-500">POSITION (m):</span><span className="text-[#00F0FF]">[{activeCam.position.join(", ")}]</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">POSITION (m):</span><span className="text-[#00F0FF]">[{activeCam.position.map((n) => Number(n.toFixed(2))).join(", ")}]</span></div>
             <div className="flex justify-between"><span className="text-slate-500">QUATERNION:</span><span>[{activeCam.quaternion.map((q) => q.toFixed(2)).join(", ")}]</span></div>
             <div className="flex justify-between pt-1.5 border-t border-slate-800"><span className="text-[#34D399]">ENSEMBLE DISAGREEMENT:</span>
               <span className="text-white font-semibold">{Math.round(activeCam.disagreementScore * 100)}%</span></div>
@@ -397,12 +434,54 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
         </div>
         <div className="mt-auto p-3.5 rounded-lg bg-emerald-950/30 border border-emerald-700/40 text-xs">
           <div className="flex items-center gap-2 font-semibold text-emerald-400 mb-1">
-            <Cpu className="w-4 h-4" /><span>Chained Descent Anchor Ready</span></div>
-          <p className="text-slate-300 leading-relaxed text-[11px]">
-            Camera #32 (<span className="font-mono text-white">Z = {cameras[cameras.length - 1]?.position[1].toFixed(1)}m</span>) can be promoted to a{" "}
-            <span className="font-mono text-emerald-300">sourceFrame</span> + <span className="font-mono text-emerald-300">contextFrame</span>{" "}
-            to launch the next 32-camera batch into the 80m basal chamber.
+            <Cpu className="w-4 h-4" /><span>Chained Descent Job</span></div>
+          <p className="text-slate-300 leading-relaxed text-[11px] mb-2">
+            Camera #32 (<span className="font-mono text-white">Z = {cameras[cameras.length - 1]?.position[1].toFixed(1)}m</span>) anchors
+            the next batch. Runs {chainBatches} batches × 2 targets as a resumable, cancellable job.
           </p>
+          <div className="flex items-center gap-2 mb-2">
+            {(["megalithic", "karst", "artifact"] as const).map((h) => (
+              <button key={h} onClick={() => setChainHyp(h)}
+                className={`px-2 py-1 rounded border font-mono text-[10px] transition ${chainHyp === h
+                  ? "bg-slate-800 border-[#34D399] text-white" : "bg-[#090A0F] border-slate-800 text-slate-400"}`}>
+                {h.slice(0, 4)}</button>
+            ))}
+            <span className="font-mono text-[10px] text-slate-400 ml-auto">batches</span>
+            <input type="range" min={1} max={6} step={1} value={chainBatches}
+              onChange={(e) => setChainBatches(parseInt(e.target.value, 10))} className="w-20 accent-[#34D399]" />
+            <span className="font-mono text-[10px] text-white">{chainBatches}</span>
+          </div>
+          {!armingChain ? (
+            <div className="flex gap-2">
+              <button onClick={() => void runChain(false)}
+                className="flex-1 px-2 py-1.5 rounded bg-slate-800 border border-slate-700 text-[11px] font-medium hover:bg-slate-700 transition">Run simulated</button>
+              <button onClick={() => setArmingChain(true)}
+                className="flex-1 px-2 py-1.5 rounded border border-[#FFB800]/60 text-[#FFB800] text-[11px] font-medium hover:bg-[#FFB800]/10 transition">Live chain</button>
+            </div>
+          ) : (
+            <div className="p-2 rounded border border-[#FFB800]/60 bg-[#FFB800]/10 text-[11px]">
+              <div className="mb-1.5">Bills {chainBatches} live task(s). {estimateCost(chainBatches, pricing, 2)}.</div>
+              <div className="flex gap-1.5">
+                <button onClick={() => { setArmingChain(false); void runChain(true); }}
+                  className="px-2 py-1 rounded bg-[#FFB800] text-slate-950 font-semibold">Confirm spend</button>
+                <button onClick={() => setArmingChain(false)} className="px-2 py-1 rounded border border-slate-700">Cancel</button>
+              </div>
+            </div>
+          )}
+          {chainJob && (
+            <div className="mt-2 font-mono text-[11px] text-slate-300">
+              <div className="flex justify-between mb-1">
+                <span>job {chainJob.id.slice(0, 12)}… {chainJob.status}{chainJob.batches ? ` · ${chainJob.batches} batches` : ""}</span>
+                {(chainJob.status === "pending" || chainJob.status === "running") && (
+                  <button onClick={() => apiBaseUrl && cancelJob(apiBaseUrl, chainJob.id).catch(() => {})}
+                    className="text-[#FF2D55] hover:underline">Cancel</button>
+                )}
+              </div>
+              <div className="h-1.5 rounded bg-slate-800 overflow-hidden">
+                <div className="h-full bg-[#34D399] transition-all" style={{ width: `${Math.round((chainJob.progress || 0) * 100)}%` }} />
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

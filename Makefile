@@ -1,5 +1,8 @@
 .PHONY: help install api web test showcase clean prod prod-down loadtest
 
+API_PORT ?= 8000
+WEB_PORT ?= 5173
+
 help:
 	@echo "Duat Local Orchestration Commands:"
 	@echo "  make install  - Install Python backend dependencies"
@@ -15,10 +18,10 @@ install:
 	pip install -r requirements.txt
 
 api:
-	uvicorn apps.api.main:app --reload --port 8000 --host 0.0.0.0
+	uvicorn apps.api.main:app --reload --port $(API_PORT) --host 0.0.0.0
 
 web:
-	cd apps/web && npm install && npm run dev
+	cd apps/web && npm install && npm run dev -- --port $(WEB_PORT)
 
 test:
 	pytest apps/api/tests -q

@@ -7,7 +7,7 @@ import React, { useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { Canvas, useFrame, useThree, ThreeEvent } from "@react-three/fiber";
 import { Layers, Eye, Sparkles, Radar, Sliders, Crosshair, ShieldAlert } from "lucide-react";
-import { postEnsemble, createJob, getJob, cancelJob, listJobs, fetchPricing, estimateCost, exportComparisonCard } from "../lib/api";
+import { postEnsemble, createJob, getJob, cancelJob, listJobs, fetchPricing, estimateCost, exportComparisonCard, decodeGrayscalePng, decodeLogDepthByte } from "../lib/api";
 import type { EnsembleRequest, EnsembleResponse, JobRecord, PricingInfo } from "../lib/api";
 
 const VERTEX_SHADER = /*glsl*/ `
@@ -153,8 +153,30 @@ function useProceduralKhafreTextures(hypothesis: Hypothesis) {
       tex.needsUpdate = true;
       return tex;
     };
-    return { depthTex: makeTex(depthData), reflTex: makeTex(reflData), rgbTex: makeTex(rgbData), disTex: makeTex(disData) };
+
+    return { depthTex: makeTex(depthData), reflTex: makeTex(reflData), rgbTex: makeTex(rgbData), disTex: makeTex(disData),
+      depthArr: depthData, reflArr: reflData, disArr: disData, w: width, h: height };
   }, [hypothesis]);
+}
+
+export interface SampleSource {
+  depth: Uint8Array | Uint8ClampedArray; refl: Uint8Array | Uint8ClampedArray; dis: Uint8Array | Uint8ClampedArray;
+  w: number; h: number; zMin: number; zMax: number;
+}
+
+/** Nearest-pixel sample of the ACTUAL layer bytes (procedural arrays or decoded PNGs). */
+export function sampleLayers(src: SampleSource, u: number, v: number): PixelTelemetry {
+  const x = Math.min(src.w - 1, Math.max(0, Math.floor(u * src.w)));
+  const y = Math.min(src.h - 1, Math.max(0, Math.floor(v * src.h)));
+  const i = (y * src.w + x) * 4;
+  const db = src.depth[i];
+  if (db === 0) return { u: Math.round(u * 1280), v: Math.round((1 - v) * 720), planarZ: 0, reflectivity: 0, disagreement: 0 };
+  return {
+    u: Math.round(u * 1280), v: Math.round((1 - v) * 720),
+    planarZ: Number(decodeLogDepthByte(db, src.zMin, src.zMax).toFixed(2)),
+    reflectivity: Number((src.refl[i] / 255).toFixed(2)),
+    disagreement: Number((src.dis[i] / 255).toFixed(2)),
+  };
 }
 
 export type PixelTelemetry = { u: number; v: number; planarZ: number; reflectivity: number; disagreement: number };
@@ -164,8 +186,10 @@ export type RunMode = "mock" | "live-probe" | "live";
 
 interface EpistemicQuadProps {
   measuredWeight: number; inferredWeight: number; imaginedWeight: number;
-  shimmerIntensity: number; loupeMode: number; hypothesis: Hypothesis;
+  shimmerIntensity: number; loupeMode: number; loupeRadius: number;
   layers: LayerUris | null;
+  proc: { depthTex: THREE.Texture; reflTex: THREE.Texture; rgbTex: THREE.Texture; disTex: THREE.Texture };
+  sampleSrc: SampleSource | null;
   onInspectPixel: (t: PixelTelemetry) => void;
   onPinPixel: (t: PixelTelemetry) => void;
 }
@@ -183,10 +207,10 @@ const ZoomFit: React.FC = () => {
   return null;
 };
 
-const EpistemicShaderQuad: React.FC<EpistemicQuadProps> = (props) => {  const { measuredWeight, inferredWeight, imaginedWeight, shimmerIntensity, loupeMode, hypothesis, onInspectPixel, onPinPixel, layers } = props;
+const EpistemicShaderQuad: React.FC<EpistemicQuadProps> = (props) => {  const { measuredWeight, inferredWeight, imaginedWeight, shimmerIntensity, loupeMode, loupeRadius, onInspectPixel, onPinPixel, layers, proc, sampleSrc } = props;
   const matRef = useRef<THREE.ShaderMaterial>(null);
   const lastTelemetry = useRef<PixelTelemetry>({ u: 640, v: 360, planarZ: 14.2, reflectivity: 0.72, disagreement: 0.34 });
-  const fallback = useProceduralKhafreTextures(hypothesis);
+  const fallback = proc;
   const [live, setLive] = useState<{ rgb: THREE.Texture; depth: THREE.Texture; refl: THREE.Texture; dis: THREE.Texture } | null>(null);
 
   // Backend layers arrive as data-URI PNGs (mock or live job output); otherwise procedural fallback.
@@ -219,20 +243,16 @@ const EpistemicShaderQuad: React.FC<EpistemicQuadProps> = (props) => {  const { 
     u.uReflectivityTexture.value = tex.refl; u.uDisagreementTexture.value = tex.dis;
     u.uMeasuredWeight.value = measuredWeight; u.uInferredWeight.value = inferredWeight;
     u.uImaginedWeight.value = imaginedWeight; u.uShimmerIntensity.value = shimmerIntensity;
-    u.uLoupeMode.value = loupeMode;
+    u.uLoupeMode.value = loupeMode; u.uLoupeRadius.value = loupeRadius;
   });
 
   const handlePointerMove = (e: ThreeEvent<PointerEvent>) => {
     if (!e.uv || !matRef.current) return;
     matRef.current.uniforms.uMouseUv.value.copy(e.uv);
-    const nx = e.uv.x * 2.0 - 1.0, ny = e.uv.y * 2.0 - 1.0;
-    const r = Math.sqrt(nx * nx + ny * ny);
-    const isEmpty = r < 0.14;
-    // Inverted decode: byte 255 = near (0.5m), byte ~1 = far (35m)
-    const byte = isEmpty ? 0 : Math.min(255, Math.max(1, Math.round((1.0 - r * 0.68) * 230)));
-    const planarZ = byte === 0 ? 0.0 : Number((0.5 * Math.pow(70, 1 - byte / 255)).toFixed(2));
-    const t = { u: Math.round(e.uv.x * 1280), v: Math.round((1.0 - e.uv.y) * 720),
-      planarZ, reflectivity: isEmpty ? 0 : 0.72, disagreement: isEmpty ? 0 : 0.34 };
+    // Telemetry is decoded from the ACTUAL layer bytes, never synthesized.
+    const t = sampleSrc
+      ? sampleLayers(sampleSrc, e.uv.x, e.uv.y)
+      : { u: Math.round(e.uv.x * 1280), v: Math.round((1.0 - e.uv.y) * 720), planarZ: 0, reflectivity: 0, disagreement: 0 };
     lastTelemetry.current = t;
     onInspectPixel(t);
   };
@@ -251,6 +271,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
   const [imaginedWeight, setImaginedWeight] = useState(0.75);
   const [shimmerIntensity, setShimmerIntensity] = useState(0.65);
   const [loupeMode, setLoupeMode] = useState(1);
+  const [loupeRadius, setLoupeRadius] = useState(0.18);
   const [hypothesis, setHypothesis] = useState<Hypothesis>("megalithic");
   const [voxelSize, setVoxelSize] = useState(0.25);
   const [sensorNoise, setSensorNoise] = useState(0.18);
@@ -265,6 +286,28 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
   const [pinned, setPinned] = useState<PixelTelemetry | null>(null);
   const [compare, setCompare] = useState<{ status: "idle" | "loading" | "error" | "done"; thumbs: { h: Hypothesis; uri: string }[] }>({ status: "idle", thumbs: [] });
   const [exporting, setExporting] = useState(false);
+  const [sampleSrc, setSampleSrc] = useState<SampleSource | null>(null);
+  const proc = useProceduralKhafreTextures(hypothesis);
+
+  // Procedural fallback sampling: same arrays the shader renders.
+  React.useEffect(() => {
+    if (layers) return;
+    setSampleSrc({ depth: proc.depthArr, refl: proc.reflArr, dis: proc.disArr,
+      w: proc.w, h: proc.h, zMin: 0.5, zMax: 35.0 });
+  }, [proc, layers]);
+
+  const buildSampleSrc = async (res: EnsembleResponse): Promise<void> => {
+    try {
+      const [d, r, s] = await Promise.all([
+        decodeGrayscalePng(res.layers.measured_log_depth_b64),
+        decodeGrayscalePng(res.layers.inferred_reflectivity_b64),
+        decodeGrayscalePng(res.layers.disagreement_map_b64)]);
+      setSampleSrc({ depth: d.data, refl: r.data, dis: s.data,
+        w: d.width, h: d.height, zMin: res.z_min, zMax: res.z_max });
+    } catch {
+      setSampleSrc(null);
+    }
+  };
 
   React.useEffect(() => {
     fetchPricing(apiBaseUrl).then(setPricing).catch(() => setPricing(null));
@@ -288,6 +331,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
       if (m === "mock") {
         const res = await postEnsemble(apiBaseUrl, baseReq(hypothesis, "mock", [7, 42]));
         setLayers(layersFromResponse(res));
+        await buildSampleSrc(res);
       } else {
         const seeds = m === "live-probe" ? [7] : [7, 42];
         const { id } = await createJob(apiBaseUrl, "ensemble", baseReq(hypothesis, "live", seeds));
@@ -297,7 +341,9 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
           const job = await getJob(apiBaseUrl, id);
           setActiveJob({ id, progress: job.progress });
           if (job.status === "done" && job.result) {
-            setLayers(layersFromResponse(job.result as EnsembleResponse));
+            const res = job.result as EnsembleResponse;
+            setLayers(layersFromResponse(res));
+            await buildSampleSrc(res);
             break;
           }
           if (job.status === "failed" || job.status === "cancelled") throw new Error(job.error?.detail ?? job.status);
@@ -305,7 +351,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
         setActiveJob(null);
       }
     } catch {
-      if (m === "mock") setLayers(null);
+      if (m === "mock") { setLayers(null); setSampleSrc(null); }
     } finally {
       setLayersBusy(false);
       listJobs(apiBaseUrl, 8).then((r) => setJobs(r.jobs)).catch(() => {});
@@ -376,7 +422,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
             <ZoomFit />
             <EpistemicShaderQuad measuredWeight={measuredWeight} inferredWeight={inferredWeight}
               imaginedWeight={imaginedWeight} shimmerIntensity={shimmerIntensity} loupeMode={loupeMode}
-              hypothesis={hypothesis} layers={layers}
+              loupeRadius={loupeRadius} layers={layers} proc={proc} sampleSrc={sampleSrc}
               onInspectPixel={setTelemetry} onPinPixel={setPinned} />
           </Canvas>
         </div>
@@ -490,6 +536,13 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
                   ? "bg-slate-800 border-[#00F0FF] text-white font-medium"
                   : "bg-[#090A0F] border-slate-800 text-slate-400 hover:border-slate-700"}`}>{mode.label}</button>
             ))}
+          </div>
+          <div className="mt-3">
+            <div className="flex justify-between text-xs mb-1">
+              <span className="text-slate-400">Loupe radius</span>
+              <span className="font-mono text-slate-300">{Math.round(loupeRadius * 100)}%</span></div>
+            <input type="range" min="0.06" max="0.30" step="0.01" value={loupeRadius}
+              onChange={(e) => setLoupeRadius(parseFloat(e.target.value))} className="w-full accent-[#00F0FF]" />
           </div>
         </div>
         <div>

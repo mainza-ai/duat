@@ -68,8 +68,9 @@ export function App() {
               : apiStatus === "mock" ? "Mock · simulated"
               : apiStatus === "checking" ? "Connecting…" : "Offline"}</span>
           </div>
-          <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 text-[11px] font-mono text-slate-500" title="Export lives in the Epistemic Lens deck and uses the current view state">
-            <span>Export: Lens deck → Export card</span>
+          <div className="hidden lg:flex items-center gap-3 px-3 py-1.5 text-[11px] font-mono text-slate-500">
+            <a href={`${apiBaseUrl}/docs`} target="_blank" rel="noreferrer" className="hover:text-[#00F0FF] transition">API docs →</a>
+            <span title="Export lives in the Epistemic Lens deck and uses the current view state">Export: Lens deck → Export card</span>
           </div>
         </div>
       </header>
