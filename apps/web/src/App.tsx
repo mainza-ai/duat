@@ -5,10 +5,12 @@ import React, { useState, useEffect } from "react";
 import { Layers, Compass, Server, ShieldCheck, Download } from "lucide-react";
 import { EpistemicLensViewport } from "./components/EpistemicLensViewport";
 import { HelicalDescentNavigator } from "./components/HelicalDescentNavigator";
+import { exportComparisonCard } from "./lib/api";
 
 export function App() {
   const [activeTab, setActiveTab] = useState<"observatory" | "helical">("observatory");
   const [apiStatus, setApiStatus] = useState<"checking" | "live" | "mock" | "offline">("checking");
+  const [exporting, setExporting] = useState(false);
   const [apiBaseUrl] = useState<string>("http://127.0.0.1:8001"); // TEMP local-test: :8000 occupied
 
   useEffect(() => {
@@ -56,9 +58,26 @@ export function App() {
               : apiStatus === "mock" ? "Mock · simulated"
               : apiStatus === "checking" ? "Connecting…" : "Offline"}</span>
           </div>
-          <button onClick={() => alert("Cryptographic Provenance Manifest & SHA-256 Hashes exported.")}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 text-xs font-medium text-slate-200 hover:bg-slate-700 transition shadow">
-            <Download className="w-3.5 h-3.5 text-[#00F0FF]" /><span>Export Manifest</span></button>
+          <button
+            disabled={exporting || apiStatus === "offline" || apiStatus === "checking"}
+            title={apiStatus === "offline" ? "Backend unreachable" : "Download PNG comparison card with baked-in provenance bar"}
+            onClick={async () => {
+              setExporting(true);
+              try {
+                const name = await exportComparisonCard(apiBaseUrl, {
+                  camera: { pose: { position: [-38.5, -20.0, -45.0], quaternion: [0, 0, 0, 1] } },
+                  hypothesis: "megalithic", instrument_rig: "drop_flare",
+                  seeds: [7, 42], voxel_size: 0.25, mock_mode: true,
+                });
+                alert(`Exported ${name}`);
+              } catch {
+                alert("Export failed — is the backend running?");
+              } finally {
+                setExporting(false);
+              }
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 text-xs font-medium text-slate-200 hover:bg-slate-700 transition shadow disabled:opacity-50">
+            <Download className="w-3.5 h-3.5 text-[#00F0FF]" /><span>{exporting ? "Exporting…" : "Export Card"}</span></button>
         </div>
       </header>
       <main className="flex-1 p-6 max-w-[1750px] w-full mx-auto flex flex-col">
@@ -76,7 +95,7 @@ export function App() {
               <div className="text-xs text-slate-400 font-mono">TRAJECTORY: <span className="text-white">32 Descending Pinhole Cameras along Shaft #2 Helical Wall</span></div>
               <div className="text-xs text-[#00F0FF] font-mono">Live Planar-Depth RGBD Back-Projection Active</div>
             </div>
-            <HelicalDescentNavigator />
+            <HelicalDescentNavigator apiBaseUrl={apiBaseUrl} />
           </div>
         )}
       </main>

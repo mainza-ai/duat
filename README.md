@@ -12,7 +12,7 @@ World Labs Marble 2 / Atlas `atlasChisel`.
 
 [![Status](https://img.shields.io/badge/status-beta-00F0FF?style=flat-square)](docs/BLUEPRINT.md)
 [![Atlas](https://img.shields.io/badge/Atlas-atlasChisel-FF6B1A?style=flat-square)](https://atlas-beta.worldlabs.ai/docs/depth-guided-generation)
-[![Tests](https://img.shields.io/badge/tests-8_passing-00c853?style=flat-square)](apps/api/tests)
+[![Tests](https://img.shields.io/badge/tests-12_passing-00c853?style=flat-square)](apps/api/tests)
 [![Stack](https://img.shields.io/badge/stack-React_19_%2B_R3F_%2B_FastAPI-FFB800?style=flat-square)](docs/BLUEPRINT.md)
 
 **Every pixel is one of three tiers — never mistaken for ground truth.**
@@ -32,29 +32,37 @@ World Labs Marble 2 / Atlas `atlasChisel`.
 ## ⚡ Quickstart
 
 ```bash
-make install && make test     # deps + mock-mode suite (no API key needed)
+make install && make test     # deps + suite (no API key needed)
 make api                       # → :8000  (terminal 1)
 make web                       # → :5173  (terminal 2)
 # or: docker compose up --build
 ```
 
-Set `WLT_API_KEY` in `.env` for live Atlas — otherwise the stack runs fully
-offline on a deterministic mock client. Zero credits burned either way.
+Set `WLT_API_KEY` in `.env` for live Atlas — the header badge tells the truth:
+**Live · Atlas** (cyan), **Mock · simulated** (gray), **Offline** (red).
+Without a key the stack runs fully offline on a deterministic mock client.
 
 ## 🏛️ Flagship dataset
 
 **Khafre Pyramid subterranean SAR anomalies** — 8 helical shafts descending
 hundreds of meters into twin 80 m basal chambers. Procedural, zero-config,
 posterior-sampled (`σ`-perturbed meshes → ensemble variance → next-best-view
-borescope targeting).
+borescope targeting). Raw meshes (`.obj/.ply/.glb/.stl`) ingest through
+`POST /api/khafre/mesh`; the LiDAR→muon degradation ladder lives at
+`GET /api/khafre/degradation`.
 
 ## 🧭 Two viewports
 
 - **Epistemic Lens** — 2D shader scrubber blending Measured / Inferred /
-  Imagined with variance-shimmer disagreement overlay, X-ray loupe, and
-  hypothesis mixer (*Megalithic × Karst × Radar-artifact* on identical geometry).
-- **Helical Descent** — 3D R3F observatory: shaft cutaway, 32 camera frustums,
-  live RGBD point-cloud back-projection, borescope POV fly-through, chained-descent anchors.
+  Imagined with variance-shimmer disagreement overlay, X-ray loupe,
+  click-to-pin inspector with simulated 3-hypothesis comparison, voxel + noise
+  sliders, and hypothesis mixer (*Megalithic × Karst × Radar-artifact* on
+  identical geometry).
+- **Helical Descent** — 3D observatory: shaft cutaway, 32 camera frustums
+  (live backend trajectory with local fallback), real-time RGBD point-cloud
+  back-projection, borescope POV fly-through, chained-descent anchors.
+- **Export Card** — one click downloads a 1920×1080 comparison card with the
+  provenance bar, parameters, and SHA-256 baked into the pixels.
 
 ## 🗺️ Repo map
 

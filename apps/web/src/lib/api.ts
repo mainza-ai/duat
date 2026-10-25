@@ -46,6 +46,114 @@ export async function postEnsemble(baseUrl: string, req: EnsembleRequest): Promi
   return res.json();
 }
 
+/** Download a composite comparison card with the provenance bar baked in. */
+export async function exportComparisonCard(
+  baseUrl: string,
+  req: EnsembleRequest
+): Promise<string> {
+  const res = await postEnsemble(baseUrl, req);
+  const load = (uri: string) =>
+    new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = uri;
+    });
+  const [depth, refl, rgb, dis, logo] = await Promise.all([
+    load(res.layers.measured_log_depth_b64),
+    load(res.layers.inferred_reflectivity_b64),
+    load(res.layers.imagined_consensus_rgb_b64),
+    load(res.layers.disagreement_map_b64),
+    load("/milimo_logo.png").catch(() => null),
+  ]);
+
+  const W = 1920, H = 1080;
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const g = cv.getContext("2d")!;
+  g.fillStyle = "#090A0F";
+  g.fillRect(0, 0, W, H);
+
+  // Provenance bar (baked in — anti-vividness-bias)
+  g.fillStyle = "#0D0F17";
+  g.fillRect(0, 0, W, 96);
+  g.fillStyle = "#00F0FF";
+  g.fillRect(0, 96, W, 3);
+  if (logo) g.drawImage(logo, 28, 20, 56, 56);
+  g.fillStyle = "#ffffff";
+  g.font = "bold 26px monospace";
+  g.fillText("MILIMO DUAT // MODEL PREDICTION — CONDITIONED ON SENSOR GEOMETRY", 100, 45);
+  g.fillStyle = "#8b95a7";
+  g.font = "20px monospace";
+  const stamp = new Date(res.timestamp_utc * 1000).toISOString();
+  g.fillText(`sha ${res.provenance_sha256.slice(0, 12)} · ${stamp}`, 100, 74);
+  const tier = (x: number, color: string, label: string) => {
+    g.fillStyle = color;
+    g.beginPath(); g.arc(x, 60, 10, 0, Math.PI * 2); g.fill();
+    g.fillStyle = "#cbd2dc"; g.font = "20px monospace";
+    g.fillText(label, x + 20, 67);
+  };
+  tier(1380, "#00F0FF", "T1 Measured");
+  tier(1580, "#FFB800", "T2 Inferred");
+  tier(1760, "#FF6B1A", "T3 Imagined");
+
+  // Panels
+  const panel = (img: HTMLImageElement, x: number, label: string, color: string) => {
+    g.fillStyle = color; g.font = "bold 22px monospace";
+    g.fillText(label, x, 150);
+    g.drawImage(img, x, 165, 600, 338);
+    g.strokeStyle = "#2a3342"; g.lineWidth = 2;
+    g.strokeRect(x, 165, 600, 338);
+  };
+  panel(depth, 24, "TIER 1 · MEASURED DEPTH (0 = EMPTY VOID)", "#00F0FF");
+  panel(refl, 660, "TIER 2 · DIELECTRIC PROXY", "#FFB800");
+  panel(rgb, 1296, "TIER 3 · ATLAS CONSENSUS", "#FF6B1A");
+  // Disagreement inset on the consensus panel
+  g.drawImage(dis, 1296 + 600 - 190, 165 + 338 - 112, 170, 96);
+  g.fillStyle = "#FF6B1A"; g.font = "bold 18px monospace";
+  g.fillText("VARIANCE", 1296 + 600 - 190, 165 + 338 - 118);
+
+  // Footer: prompt + params + badge
+  g.fillStyle = "#0D0F17";
+  g.fillRect(0, 560, W, H - 560);
+  g.fillStyle = "#FF6B1A";
+  g.fillRect(24, 590, 6, 120);
+  g.fillStyle = "#cbd2dc"; g.font = "22px monospace";
+  wrapText(g, `PROMPT: ${res.prompt_used}`, 48, 615, W - 96, 30);
+  g.fillStyle = "#8b95a7"; g.font = "21px monospace";
+  const seeds = (req.seeds ?? []).join(",");
+  g.fillText(
+    `voxel ${res.voxel_size}m · seeds [${seeds}] · z [${res.z_min}, ${res.z_max}] · empty ${(res.empty_void_pixel_ratio * 100).toFixed(1)}% · disagreement ${(res.mean_ensemble_disagreement * 100).toFixed(1)}% · NBV z=${res.next_best_view.target_z_m}m (−${res.next_best_view.predicted_variance_reduction_pct}%)`,
+    48, 740);
+  g.fillStyle = "#090A0F";
+  g.fillRect(0, H - 90, W, 90);
+  g.fillStyle = "#FF6B1A";
+  g.fillRect(0, H - 90, W, 4);
+  g.fillStyle = "#ffffff"; g.font = "bold 24px monospace";
+  g.fillText("MODEL PREDICTION — CONDITIONED ON SENSOR GEOMETRY · NOT GROUND TRUTH", 48, H - 38);
+  g.fillStyle = "#8b95a7"; g.font = "20px monospace";
+  g.fillText(`provenance ${res.provenance_sha256}`, 48, H - 12);
+
+  const name = `milimo-duat-${res.provenance_sha256.slice(0, 12)}.png`;
+  const a = document.createElement("a");
+  a.download = name;
+  a.href = cv.toDataURL("image/png");
+  a.click();
+  return name;
+}
+
+function wrapText(g: CanvasRenderingContext2D, text: string, x: number, y: number, maxW: number, lh: number) {
+  const words = text.split(" ");
+  let line = "", yy = y, count = 0;
+  for (const w of words) {
+    const t = line ? line + " " + w : w;
+    if (g.measureText(t).width > maxW && line) {
+      g.fillText(line, x, yy); yy += lh; line = w;
+      if (++count >= 2) break;
+    } else line = t;
+  }
+  if (count < 3) g.fillText(line, x, yy);
+}
 /** Official inverted log-depth decode (255 = zMin, 0 = empty). Mirrors backend + GLSL. */
 export function decodeLogDepthByte(p: number, zMin: number, zMax: number): number {
   if (p <= 0) return 0;

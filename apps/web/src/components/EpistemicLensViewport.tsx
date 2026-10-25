@@ -156,16 +156,20 @@ function useProceduralKhafreTextures(hypothesis: Hypothesis) {
   }, [hypothesis]);
 }
 
+export type PixelTelemetry = { u: number; v: number; planarZ: number; reflectivity: number; disagreement: number };
+
 interface EpistemicQuadProps {
   measuredWeight: number; inferredWeight: number; imaginedWeight: number;
   shimmerIntensity: number; loupeMode: number; hypothesis: Hypothesis;
-  apiBaseUrl: string; useLive: boolean;
-  onInspectPixel: (t: { u: number; v: number; planarZ: number; reflectivity: number; disagreement: number }) => void;
+  apiBaseUrl: string; useLive: boolean; voxelSize: number; sensorNoise: number;
+  onInspectPixel: (t: PixelTelemetry) => void;
+  onPinPixel: (t: PixelTelemetry) => void;
 }
 
 const EpistemicShaderQuad: React.FC<EpistemicQuadProps> = (props) => {
-  const { measuredWeight, inferredWeight, imaginedWeight, shimmerIntensity, loupeMode, hypothesis, onInspectPixel } = props;
+  const { measuredWeight, inferredWeight, imaginedWeight, shimmerIntensity, loupeMode, hypothesis, onInspectPixel, onPinPixel, voxelSize, sensorNoise } = props;
   const matRef = useRef<THREE.ShaderMaterial>(null);
+  const lastTelemetry = useRef<PixelTelemetry>({ u: 640, v: 360, planarZ: 14.2, reflectivity: 0.72, disagreement: 0.34 });
   const fallback = useProceduralKhafreTextures(hypothesis);
   const [live, setLive] = useState<{ rgb: THREE.Texture; depth: THREE.Texture; refl: THREE.Texture; dis: THREE.Texture } | null>(null);
 
@@ -178,6 +182,7 @@ const EpistemicShaderQuad: React.FC<EpistemicQuadProps> = (props) => {
     postEnsemble(props.apiBaseUrl, {
       camera: { pose: { position: [-38.5, -20.0, -45.0], quaternion: [0, 0, 0, 1] } },
       hypothesis, instrument_rig: "drop_flare", seeds: [7, 42], mock_mode: true,
+      voxel_size: voxelSize, sensor_noise_sigma_m: sensorNoise,
     }).then((res) => {
       if (cancelled) return;
       const tx = (uri: string) => loader.load(uri);
@@ -185,7 +190,7 @@ const EpistemicShaderQuad: React.FC<EpistemicQuadProps> = (props) => {
         refl: tx(res.layers.inferred_reflectivity_b64), dis: tx(res.layers.disagreement_map_b64) });
     }).catch(() => setLive(null));
     return () => { cancelled = true; };
-  }, [props.useLive, props.apiBaseUrl, hypothesis]);
+  }, [props.useLive, props.apiBaseUrl, hypothesis, voxelSize, sensorNoise]);
 
   const tex = live ?? { rgb: fallback.rgbTex, depth: fallback.depthTex, refl: fallback.reflTex, dis: fallback.disTex };
   const uniforms = useMemo(() => ({
@@ -218,12 +223,14 @@ const EpistemicShaderQuad: React.FC<EpistemicQuadProps> = (props) => {
     // Inverted decode: byte 255 = near (0.5m), byte ~1 = far (35m)
     const byte = isEmpty ? 0 : Math.min(255, Math.max(1, Math.round((1.0 - r * 0.68) * 230)));
     const planarZ = byte === 0 ? 0.0 : Number((0.5 * Math.pow(70, 1 - byte / 255)).toFixed(2));
-    onInspectPixel({ u: Math.round(e.uv.x * 1280), v: Math.round((1.0 - e.uv.y) * 720),
-      planarZ, reflectivity: isEmpty ? 0 : 0.72, disagreement: isEmpty ? 0 : 0.34 });
+    const t = { u: Math.round(e.uv.x * 1280), v: Math.round((1.0 - e.uv.y) * 720),
+      planarZ, reflectivity: isEmpty ? 0 : 0.72, disagreement: isEmpty ? 0 : 0.34 };
+    lastTelemetry.current = t;
+    onInspectPixel(t);
   };
 
   return (
-    <mesh onPointerMove={handlePointerMove}>
+    <mesh onPointerMove={handlePointerMove} onClick={() => onPinPixel(lastTelemetry.current)}>
       <planeGeometry args={[16, 9]} />
       <shaderMaterial ref={matRef} vertexShader={VERTEX_SHADER} fragmentShader={FRAGMENT_SHADER} uniforms={uniforms} />
     </mesh>
@@ -238,7 +245,30 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string }> = ({ apiBas
   const [loupeMode, setLoupeMode] = useState(1);
   const [hypothesis, setHypothesis] = useState<Hypothesis>("megalithic");
   const [useLive, setUseLive] = useState(false);
-  const [telemetry, setTelemetry] = useState({ u: 640, v: 360, planarZ: 14.2, reflectivity: 0.72, disagreement: 0.34 });
+  const [voxelSize, setVoxelSize] = useState(0.25);
+  const [sensorNoise, setSensorNoise] = useState(0.18);
+  const [telemetry, setTelemetry] = useState<PixelTelemetry>({ u: 640, v: 360, planarZ: 14.2, reflectivity: 0.72, disagreement: 0.34 });
+  const [pinned, setPinned] = useState<PixelTelemetry | null>(null);
+  const [compare, setCompare] = useState<{ status: "idle" | "loading" | "error" | "done"; thumbs: { h: Hypothesis; uri: string }[] }>({ status: "idle", thumbs: [] });
+
+  const runHypothesisCompare = async () => {
+    if (!pinned) return;
+    setCompare({ status: "loading", thumbs: [] });
+    try {
+      const hs: Hypothesis[] = ["megalithic", "karst", "artifact"];
+      const results = await Promise.all(hs.map(async (h) => {
+        const res = await postEnsemble(apiBaseUrl, {
+          camera: { pose: { position: [-38.5, -20.0, -45.0], quaternion: [0, 0, 0, 1] } },
+          hypothesis: h, instrument_rig: "drop_flare", seeds: [7, 42],
+          mock_mode: true, voxel_size: voxelSize, sensor_noise_sigma_m: sensorNoise,
+        });
+        return { h, uri: res.layers.imagined_consensus_rgb_b64 };
+      }));
+      setCompare({ status: "done", thumbs: results });
+    } catch {
+      setCompare({ status: "error", thumbs: [] });
+    }
+  };
 
   return (
     <div className="flex flex-col lg:flex-row w-full min-h-[720px] bg-[#090A0F] text-slate-100 font-sans border border-slate-800 rounded-xl overflow-hidden shadow-2xl">
@@ -249,7 +279,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string }> = ({ apiBas
             <span className="font-semibold tracking-wider uppercase text-slate-200">MILIMO DUAT // MODEL PREDICTION — CONDITIONED ON KHAFRE SAR GEOMETRY</span>
           </div>
           <div className="flex items-center gap-4 font-mono text-[11px] text-slate-400">
-            <span>TASK: atlasChisel</span><span>VOXEL_GAUGE: 0.25m</span>
+            <span>TASK: atlasChisel</span><span>VOXEL_GAUGE: {voxelSize.toFixed(2)}m</span>
             <span className="text-[#00F0FF]">CAM #04/32 (1280×720 PINHOLE)</span>
           </div>
         </div>
@@ -257,7 +287,9 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string }> = ({ apiBas
           <Canvas orthographic camera={{ zoom: 45, position: [0, 0, 10] }}>
             <EpistemicShaderQuad measuredWeight={measuredWeight} inferredWeight={inferredWeight}
               imaginedWeight={imaginedWeight} shimmerIntensity={shimmerIntensity} loupeMode={loupeMode}
-              hypothesis={hypothesis} apiBaseUrl={apiBaseUrl} useLive={useLive} onInspectPixel={setTelemetry} />
+              hypothesis={hypothesis} apiBaseUrl={apiBaseUrl} useLive={useLive}
+              voxelSize={voxelSize} sensorNoise={sensorNoise}
+              onInspectPixel={setTelemetry} onPinPixel={setPinned} />
           </Canvas>
         </div>
         <div className="z-10 grid grid-cols-2 sm:grid-cols-4 gap-2 px-4 py-2.5 bg-[#090A0F]/95 border-t border-slate-800 font-mono text-xs">
@@ -331,6 +363,57 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string }> = ({ apiBas
             ))}
           </div>
         </div>
+        <div>
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
+            <Sliders className="w-4 h-4 text-[#00F0FF]" /><span>Sensor & Voxel Gauge</span></div>
+          <div className="space-y-4 bg-[#090A0F] p-4 rounded-lg border border-slate-800/80">
+            <div>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-slate-300 font-medium">Voxel size (scene gauge)</span>
+                <span className="font-mono text-[#00F0FF]">{voxelSize.toFixed(2)}m</span></div>
+              <input type="range" min="0" max="0.4" step="0.01" value={voxelSize}
+                onChange={(e) => setVoxelSize(parseFloat(e.target.value))} className="w-full accent-[#00F0FF]" />
+            </div>
+            <div>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-slate-300 font-medium">Sensor noise σ (posterior)</span>
+                <span className="font-mono text-[#FFB800]">{sensorNoise.toFixed(2)}m</span></div>
+              <input type="range" min="0" max="1" step="0.01" value={sensorNoise}
+                onChange={(e) => setSensorNoise(parseFloat(e.target.value))} className="w-full accent-[#FFB800]" />
+            </div>
+            <p className="text-[11px] text-slate-500 leading-relaxed">Finer voxels preserve blockout detail; higher σ widens the posterior ensemble spread.</p>
+          </div>
+        </div>
+        {pinned && (
+          <div className="p-3.5 rounded-lg bg-[#090A0F] border border-[#FF6B1A]/50 text-xs">
+            <div className="flex items-center justify-between mb-2">
+              <span className="font-semibold text-[#FF6B1A]">Pinned Inspection (click viewport to re-pin)</span>
+              <button onClick={() => { setPinned(null); setCompare({ status: "idle", thumbs: [] }); }}
+                className="text-slate-500 hover:text-white font-mono">✕</button>
+            </div>
+            <div className="font-mono text-[11px] text-slate-300 space-y-1 mb-3">
+              <div>PIXEL ({pinned.u}, {pinned.v}) · Z {pinned.planarZ === 0 ? "0.0m EMPTY" : `${pinned.planarZ}m`}</div>
+              <div>DIELECTRIC {pinned.reflectivity} · SPLIT {Math.round(pinned.disagreement * 100)}%</div>
+            </div>
+            {compare.status === "idle" && (
+              <button onClick={runHypothesisCompare}
+                className="w-full px-3 py-2 rounded-md bg-[#FF6B1A]/15 border border-[#FF6B1A]/50 text-[#FF6B1A] text-xs font-medium hover:bg-[#FF6B1A]/25 transition">
+                Compare 3 hypotheses here (simulated)</button>
+            )}
+            {compare.status === "loading" && <div className="text-slate-400 font-mono text-[11px]">Simulating 3 hypotheses…</div>}
+            {compare.status === "error" && <div className="text-[#FF2D55] font-mono text-[11px]">Backend unreachable — start the API first.</div>}
+            {compare.status === "done" && (
+              <div className="grid grid-cols-3 gap-2">
+                {compare.thumbs.map(({ h, uri }) => (
+                  <figure key={h}>
+                    <img src={uri} alt={h} className="rounded border border-slate-700 w-full" />
+                    <figcaption className="text-center text-[10px] font-mono text-slate-400 mt-1">{h}</figcaption>
+                  </figure>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         <div className="mt-auto p-3.5 rounded-lg bg-[#FF6B1A]/10 border border-[#FF6B1A]/40 text-xs">
           <div className="flex items-center gap-2 font-semibold text-[#FF6B1A] mb-1">
             <Radar className="w-4 h-4" /><span>Next-Best-View Target Identified</span></div>

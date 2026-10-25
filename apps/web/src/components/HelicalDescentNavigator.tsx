@@ -148,14 +148,37 @@ const CameraRigSync: React.FC<{ activeCam: PosedCameraSpec; firstPersonMode: boo
   return null;
 };
 
-export const HelicalDescentNavigator: React.FC = () => {
-  const cameras = useMemo(() => generateHelicalTrajectory(32), []);
+export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string }> = ({ apiBaseUrl }) => {
+  const [cameras, setCameras] = useState<PosedCameraSpec[]>(() => generateHelicalTrajectory(32));
+  const [trajSource, setTrajSource] = useState<"procedural" | "backend">("procedural");
   const [selectedIdx, setSelectedIdx] = useState(4);
   const [isPlaying, setIsPlaying] = useState(false);
   const [firstPersonMode, setFirstPersonMode] = useState(false);
   const [showShaftWireframe, setShowShaftWireframe] = useState(true);
   const [colorMode, setColorMode] = useState<PointCloudColorMode>("rgb");
   const [pointSize, setPointSize] = useState(0.18);
+
+  // Prefer the backend's helical trajectory; fall back to procedural.
+  useEffect(() => {
+    if (!apiBaseUrl) return;
+    let cancelled = false;
+    fetch(`${apiBaseUrl}/api/khafre/trajectory?num_cameras=32`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("trajectory"))))
+      .then((body) => {
+        if (cancelled || !Array.isArray(body.targetCameras)) return;
+        const mapped: PosedCameraSpec[] = body.targetCameras.map((c: any, i: number) => ({
+          index: i,
+          width: c.intrinsics.width, height: c.intrinsics.height,
+          fx: c.intrinsics.fx, fy: c.intrinsics.fy, cx: c.intrinsics.cx, cy: c.intrinsics.cy,
+          position: c.extrinsics.position, quaternion: c.extrinsics.quaternion,
+          disagreementScore: Number((0.22 + 0.68 * Math.exp(-Math.pow((i - 18) / 3.5, 2))).toFixed(2)),
+          isNextBestView: i === 18,
+        }));
+        if (mapped.length > 0) { setCameras(mapped); setTrajSource("backend"); }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [apiBaseUrl]);
   const activeCam = cameras[selectedIdx] || cameras[0];
   useEffect(() => {
     if (!isPlaying) return;
@@ -171,6 +194,7 @@ export const HelicalDescentNavigator: React.FC = () => {
             <span className="font-semibold tracking-wider uppercase">MILIMO DUAT // 3D HELICAL DESCENT & RGBD POINT-CLOUD BACK-PROJECTION</span></div>
           <div className="flex items-center gap-3 font-mono text-[11px] text-slate-400">
             <span>SHAFT #2 (WEST ROW)</span>
+            <span className="text-slate-500">SRC:{trajSource === "backend" ? "API" : "LOCAL"}</span>
             <span className="text-[#00F0FF]">POSE #{activeCam.index + 1}/32 (DEPTH: {activeCam.position[1]}m)</span></div>
         </div>
         <div className="relative flex-1 w-full h-full">

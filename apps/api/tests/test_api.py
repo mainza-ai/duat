@@ -22,6 +22,25 @@ def test_trajectory_shape():
     assert cam["extrinsics"]["coordinateSystem"] == "rub"
 
 
+def test_degradation_sweep_ladder():
+    r = client.get("/api/khafre/degradation")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [lv["name"] for lv in body["levels"]] == ["lidar", "sar_high", "gpr", "muon"]
+    rms = [lv["rms_displacement_m"] for lv in body["levels"]]
+    assert rms[0] == 0.0 and all(v >= 0.0 for v in rms)
+    assert rms[-1] >= rms[0]
+
+
+def test_ensemble_posterior_resample_flag():
+    r = client.post("/api/chisel/ensemble", json={
+        "camera": {"pose": {"position": [-38.5, -20.0, -45.0], "quaternion": [0, 0, 0, 1]}},
+        "seeds": [7, 42], "voxel_size": 0.25,
+        "mock_mode": True, "posterior_resample": True, "structural_weight": 0.5})
+    assert r.status_code == 200, r.text
+    assert len(r.json()["provenance_sha256"]) == 64
+
+
 def test_ensemble_mock_roundtrip():
     r = client.post("/api/chisel/ensemble", json={
         "camera": {"pose": {"position": [-38.5, -20.0, -45.0], "quaternion": [0, 0, 0, 1]}},

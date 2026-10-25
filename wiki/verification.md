@@ -13,7 +13,7 @@
 
 ## Test suite
 
-- `pytest apps/api/tests -q`: depth math, codec edges, ensemble shapes,
+- `pytest apps/api/tests -q`: **12 passed** — depth math, inverted codec
   prompt composer, mock client determinism, API contract (mock mode, no key).
 
 ## Quickstart

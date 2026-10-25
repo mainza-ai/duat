@@ -1,3 +1,18 @@
+## [2026-10-25] audit | Full plan-vs-implementation audit + gap closure
+
+- Gaps found: exporter was `alert()` stub; no voxel/σ sliders; no click
+  inspector; no mesh→volume ingest; std-only disagreement (wiki claimed
+  SSIM hook); no degradation endpoint; single geometry sample per ensemble;
+  torch path stub-only.
+- Fixed: real PNG comparison-card exporter with baked-in provenance bar
+  (`Export Card`); voxel + σ sliders wired to backend; click-to-pin
+  inspector with simulated 3-hypothesis comparison; `POST /api/khafre/mesh`
+  (mesh→`EpistemicVolumeBundle`, trimesh positive-inside sign corrected);
+  `GET /api/khafre/degradation` ladder (RMS 0 → 0.014 → 0.58 → 2.72m);
+  `posterior_resample` + `structural_weight` (SSIM blend) flags; defensive
+  torch MPS/CUDA path; navigator prefers backend trajectory w/ fallback.
+- Suite now **12 passed** (was 8); tsc clean; e2e verified through proxy.
+
 ## [2026-10-25] repo | Initialized git + pushed to mainza-ai/duat
 
 - `git init -b main`, root commit `27b68bd` (42 files: backend, frontend,
