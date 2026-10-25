@@ -1,3 +1,15 @@
+## [2026-10-25] fix | 3D view broken — backend/scene frame mismatch
+
+- Root cause: the navigator fetched live backend cameras (Z-up Khafre frame,
+  shaft #2 at x=-40/y=-20, z down to -180) and rendered them raw in the
+  Y-up demo scene (shaft at origin, mesh y in [-115,-5]) — frustums and
+  point cloud landed ~40 m off-axis and below the mesh: empty-looking view.
+- Fix: `GET /api/khafre/trajectory` accepts `z_start/z_end/orbit_radius`
+  + returns `shaft_center_xy`/`coordinate_frame`; frontend maps cameras via
+  the Z-up→Y-up rigid transform (R_x(-90°), quaternion left-multiplied) and
+  requests z in [-15,-105] to fit the 110 m shaft prop. Verified all 32
+  mapped poses orbit r≈2.4 inside the mesh. Suite 12 passed, tsc clean.
+
 ## [2026-10-25] audit | Full plan-vs-implementation audit + gap closure
 
 - Gaps found: exporter was `alert()` stub; no voxel/σ sliders; no click
