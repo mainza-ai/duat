@@ -20,6 +20,7 @@ export interface EnsembleRequest {
   mode?: RunMode;
   structural_weight?: number;
   posterior_resample?: boolean;
+  spiral_style?: "interior_ramp" | "exterior_coil";
   chain_batches?: number;
   chain_targets?: number;
   return_depth?: boolean;
@@ -233,12 +234,14 @@ export async function renderDepth(
   baseUrl: string,
   camera: EnsembleRequest["camera"],
   outW = 160, outH = 90, seed = 7,
-  shaftCenter: [number, number] = [-40, -20]
+  shaftCenter: [number, number] = [-40, -20],
+  spiralStyle: "interior_ramp" | "exterior_coil" = "interior_ramp"
 ): Promise<DepthRenderResponse> {
   const res = await fetch(`${baseUrl}/api/khafre/depth`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ camera, out_width: outW, out_height: outH, seed, shaft_center_xy: shaftCenter }),
+    body: JSON.stringify({ camera, out_width: outW, out_height: outH, seed,
+      shaft_center_xy: shaftCenter, spiral_style: spiralStyle }),
   });
   if (!res.ok) throw new Error(`depth render failed: ${res.status}`);
   return res.json();

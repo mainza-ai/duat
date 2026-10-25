@@ -98,6 +98,22 @@ def test_rate_limiter_unit():
     assert not _rate_limit_ok(ip, 3)
 
 
+def test_complex_glb_and_metadata():
+    import json as _json
+    import struct
+
+    r = client.get("/api/khafre/complex-glb")
+    assert r.status_code == 200, r.text
+    assert r.content[:4] == b"glTF"
+    json_len = struct.unpack("<I", r.content[12:16])[0]
+    scene = _json.loads(r.content[20:20 + json_len])
+    names = {n.get("name", "") for n in scene.get("nodes", [])}
+    assert any("shaft" in n for n in names) and any("chamber" in n or "basal" in n for n in names)
+    meta = client.get("/api/khafre/complex").json()
+    assert meta["water_z_m"] == -585.0
+    assert len([p for p in meta["parts"] if p["kind"] == "shaft"]) == 8
+
+
 def test_posterior_mesh_glb():
     r = client.get("/api/khafre/mesh-glb")
     assert r.status_code == 200, r.text
@@ -105,6 +121,23 @@ def test_posterior_mesh_glb():
     assert r.content[:4] == b"glTF"
     assert len(r.content) > 10000
     assert "x-mesh-sha256" in {k.lower() for k in r.headers.keys()}
+
+
+def test_frames_persist_and_download():
+    # Seed one ensemble (mock) to record a frame, then list + download.
+    r = client.post("/api/chisel/ensemble", json={
+        "camera": {"pose": {"position": [-38.5, -20.0, -45.0], "quaternion": [0, 0, 0, 1]}},
+        "seeds": [7], "mode": "mock"})
+    assert r.status_code == 200, r.text
+    sha = r.json()["provenance_sha256"]
+    fr = client.get("/api/frames?limit=5").json()["frames"]
+    assert len(fr) >= 1
+    mine = [f for f in fr if f["provenance_sha"] == sha]
+    assert mine, "ensemble run must record its frame"
+    rgb = client.get(f"/api/frames/{mine[0]['id']}/rgb")
+    assert rgb.status_code == 200 and rgb.content[:8] == b"\x89PNG\r\n\x1a\n"
+    assert rgb.headers["content-type"] == "image/png"
+    assert client.get("/api/frames/nope/rgb").status_code == 404
 
 
 def test_reference_voids_cited_dims():

@@ -32,6 +32,12 @@ class ShaftParams:
     z_top_m: float = -15.0
     z_bottom_m: float = -550.0
     handedness: int = 1             # +1 descending with CCW angle
+    # Competing spiral readings of the same anomaly. The claimants' own diagram
+    # draws the spiral as an EXTERNAL coil wrapping each shaft; the interior
+    # ramp is our walkway reading. Never blend: one variant per run, recorded.
+    spiral_style: str = "interior_ramp"  # or "exterior_coil"
+    coil_offset_m: float = 0.3      # tube center sits this far outside the wall
+    coil_tube_m: float = 0.6        # tube radius (half-embedded → visible bead)
 
 
 def _helix_gap(pz: np.ndarray, theta: np.ndarray, p: ShaftParams) -> np.ndarray:
@@ -42,6 +48,23 @@ def _helix_gap(pz: np.ndarray, theta: np.ndarray, p: ShaftParams) -> np.ndarray:
     r_ramp = max(p.radius_m - p.ramp_width_m / 2.0, 0.5)
     cos_a = p.spiral_pitch_m / np.sqrt(p.spiral_pitch_m ** 2 + (2.0 * np.pi * r_ramp) ** 2)
     return gap * cos_a
+
+
+def coil_solid_sdf(r: np.ndarray, theta: np.ndarray, pz: np.ndarray,
+                   p: ShaftParams) -> np.ndarray:
+    """SDF of the exterior helical tube solid (< 0 inside the tube).
+
+    Centerline: same pitch/handedness as the ramp, wrapped at
+    r_center = R + coil_offset. Nearest-turn math mirrors _helix_gap, then
+    true 3D distance to the centerline point at the query's own angle."""
+    u = (p.z_top_m - pz) / p.spiral_pitch_m + p.handedness * theta / (2.0 * np.pi)
+    n = np.round(u)
+    zc = p.z_top_m - (n - p.handedness * theta / (2.0 * np.pi)) * p.spiral_pitch_m
+    rc = p.radius_m + p.coil_offset_m
+    dx = r * np.cos(theta) - rc * np.cos(theta)
+    dy = r * np.sin(theta) - rc * np.sin(theta)
+    dz = pz - zc
+    return np.sqrt(dx * dx + dy * dy + dz * dz) - p.coil_tube_m
 
 
 def ramp_box_sdf(r: np.ndarray, gap: np.ndarray, p: ShaftParams) -> np.ndarray:
@@ -72,11 +95,28 @@ def shaft_void_sdf(
     gap = _helix_gap(pz, theta, p)
     # Only the turns inside the shaft's vertical span can matter; far turns
     # already produce large |gap|, so no explicit clamp is needed.
-    ramp = ramp_box_sdf(r, gap, p)
-    return np.maximum(void, -ramp)
+    if p.spiral_style == "exterior_coil":
+        solid = coil_solid_sdf(r, theta, pz, p)
+    else:
+        solid = ramp_box_sdf(r, gap, p)
+    return np.maximum(void, -solid)
 
 
 def ramp_proximity(r: np.ndarray, gap: np.ndarray, p: ShaftParams, scale_m: float = 2.0) -> np.ndarray:
-    """Tier-2 dielectric boost field peaking at the ramp surface (dressed stone)."""
+    """Tier-2 dielectric boost field peaking at the spiral-feature surface."""
     rb = ramp_box_sdf(r, gap, p)
     return np.exp(-(rb / max(scale_m, 1e-6)) ** 2)
+
+
+def spiral_feature_proximity(px: np.ndarray, py: np.ndarray, pz: np.ndarray,
+                             cx: float, cy: float, p: ShaftParams,
+                             scale_m: float = 2.0) -> np.ndarray:
+    """Variant-aware proximity: ramp ribbon or exterior coil, whichever is active."""
+    dx, dy = px - cx, py - cy
+    r = np.sqrt(dx * dx + dy * dy)
+    theta = np.arctan2(dy, dx)
+    if p.spiral_style == "exterior_coil":
+        feat = coil_solid_sdf(r, theta, pz, p)
+    else:
+        feat = ramp_box_sdf(r, _helix_gap(pz, theta, p), p)
+    return np.exp(-(feat / max(scale_m, 1e-6)) ** 2)

@@ -43,6 +43,38 @@ def test_plain_cylinder_differs_from_relief_variant():
     assert np.all(np.abs(a[ring]) < 0.06)
 
 
+def test_exterior_coil_variant():
+    from apps.api.pipeline.shaft_model import ShaftParams
+
+    coil = ShaftParams(spiral_style="exterior_coil")
+    intr = ShaftParams(spiral_style="interior_ramp")
+    # Tube center sits just outside the wall on a turn: solid tube in coil variant.
+    px, py, pz = CX + P.radius_m + 0.3, CY, P.z_top_m
+    v_coil = shaft_void_sdf(np.array([px]), np.array([py]), np.array([pz]), CX, CY, coil)
+    assert float(v_coil[0]) > 0.0
+    # Same spot in the interior variant: outside the cylinder void → rock.
+    v_intr = shaft_void_sdf(np.array([px]), np.array([py]), np.array([pz]), CX, CY, intr)
+    assert float(v_intr[0]) > 0.0
+    # One meter inside the wall, exactly on a turn (one pitch below the top):
+    # interior ramp shelf reads solid, exterior coil leaves open void.
+    qx, qy, qz = CX + P.radius_m - 1.0, CY, P.z_top_m - P.spiral_pitch_m
+    assert float(shaft_void_sdf(np.array([qx]), np.array([qy]), np.array([qz]), CX, CY, intr)[0]) > 0.0
+    assert float(shaft_void_sdf(np.array([qx]), np.array([qy]), np.array([qz]), CX, CY, coil)[0]) < 0.0
+
+
+def test_mesh_glb_spiral_variant():
+    from fastapi.testclient import TestClient
+
+    from apps.api.main import app
+
+    c = TestClient(app)
+    for style in ("interior_ramp", "exterior_coil"):
+        r = c.get(f"/api/khafre/mesh-glb?spiral_style={style}")
+        assert r.status_code == 200, (style, r.text[:200])
+        assert r.content[:4] == b"glTF"
+    assert c.get("/api/khafre/mesh-glb?spiral_style=bogus").status_code == 422
+
+
 def test_renderer_matches_volume_convention():
     from apps.api.pipeline.depth_renderer import render_shaft_planar_depth_and_reflectivity
 

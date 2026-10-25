@@ -384,6 +384,186 @@ class WorldLabsAtlasClient:
                     return await self._decode_live_result(client, status, seed, hypothesis, req_hash, op_id, prompt)
             raise AtlasError("TIMEOUT", f"Operation {op_id} timed out.")
 
+    async def _submit_and_await(
+        self,
+        client: httpx.AsyncClient,
+        task_path: str,
+        payload: Dict[str, Any],
+        idempotency_key: Optional[str],
+        task_name: str = "task",
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Submit once + :wait + poll until terminal. Returns (op_id, status).
+        Shared by every Atlas task (chisel, generate, splats)."""
+        submit = await _request_json(
+            client, "POST", f"{self.base_url}{task_path}",
+            headers=self._headers(idempotency_key), payload=payload, attempts=3)
+        op = submit.json()
+        op_id = op.get("id") or op.get("name", "").split("/")[-1]
+        if op.get("done"):
+            if op.get("error"):
+                raise AtlasError("FAILED", f"{task_name} failed: {op['error']}")
+            return op_id, op
+        try:
+            wait = await client.post(f"{self.base_url}/operations/{op_id}:wait",
+                                     headers=self._headers(),
+                                     json={"timeoutSecs": 25}, timeout=45.0)
+            if wait.status_code < 300:
+                wop = wait.json()
+                if wop.get("done"):
+                    if wop.get("error"):
+                        raise AtlasError("FAILED", f"{task_name} failed: {wop['error']}")
+                    return op_id, wop
+        except (httpx.TimeoutException, httpx.TransportError, AtlasError):
+            pass  # wait is best-effort; polling continues below
+        for attempt in range(90):
+            await asyncio.sleep(min(1.5 * (1.15 ** attempt), 6.0) + random.uniform(0, 1))
+            try:
+                poll = await _request_json(
+                    client, "GET", f"{self.base_url}/operations/{op_id}",
+                    headers=self._headers(), attempts=3)
+            except AtlasError as exc:
+                if exc.code in ("RATE_LIMITED", "SERVER"):
+                    continue
+                raise
+            status = poll.json()
+            if status.get("done"):
+                if status.get("error"):
+                    raise AtlasError("FAILED", f"{task_name} task failed: {status['error']}")
+                return op_id, status
+        raise AtlasError("TIMEOUT", f"Operation {op_id} timed out.")
+
+    async def _run_task(
+        self,
+        task_path: str,
+        payload: Dict[str, Any],
+        idempotency_key: Optional[str],
+        task_name: str,
+    ) -> Tuple[str, str, Dict[str, Any]]:
+        """Submit + await a task; returns (op_id, request_hash, terminal status)."""
+        req_hash = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+        if self.mock_mode:
+            await asyncio.sleep(0.05)
+            return f"op_mock_{req_hash[:12]}", req_hash, {"done": True, "mock": True, "response": {}}
+        async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+            op_id, status = await self._submit_and_await(
+                client, task_path, payload, idempotency_key, task_name)
+            return op_id, req_hash, status
+
+    @dataclass
+    class GenerateResult:
+        operation_id: str
+        request_hash: str
+        prompt_used: str
+        rgb_frames: List[np.ndarray] = field(default_factory=list)
+        predicted_depths: List[np.ndarray] = field(default_factory=list)
+        cameras: List[Dict[str, Any]] = field(default_factory=list)
+
+    @dataclass
+    class SplatMeshResult:
+        operation_id: str
+        request_hash: str
+        mesh_asset_id: str = ""
+        mesh_url: str = ""
+        anchor_positions: List[List[float]] = field(default_factory=list)
+        mesh_bytes: bytes = b""  # populated in mock mode only
+
+    async def run_atlas_generate(
+        self,
+        context_frames: List[Dict[str, Any]],
+        target_cameras: List[Dict[str, Any]],
+        prompt: Optional[str] = None,
+        enhance_prompt: bool = True,
+        return_depth: bool = False,
+        seed: Optional[int] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> "WorldLabsAtlasClient.GenerateResult":
+        """atlasGenerate: posed RGBD context → new views at target cameras.
+        Context entries: {image_asset_id, depth_asset_id?, camera} with 1280x720
+        intrinsics; pure-rotation rigs are rejected for returnDepth upstream."""
+        if not context_frames:
+            raise ValueError("atlasGenerate requires at least one context frame.")
+        if not (1 <= len(target_cameras) <= 32):
+            raise ValueError("atlasGenerate requires 1..32 targetCameras.")
+        ctx = []
+        for fr in context_frames:
+            entry: Dict[str, Any] = {
+                "imageAsset": {"assetId": fr["image_asset_id"]},
+                "camera": self._camera(fr["camera"]),
+            }
+            if fr.get("depth_asset_id"):
+                entry["depth"] = {"depthAsset": {"assetId": fr["depth_asset_id"]}}
+            ctx.append(entry)
+        payload: Dict[str, Any] = {
+            "contextFrames": ctx,
+            "targetCameras": [self._camera(c) for c in target_cameras],
+            "enhancePrompt": bool(enhance_prompt),
+            "returnDepth": bool(return_depth),
+        }
+        if prompt:
+            payload["prompt"] = prompt
+        if seed is not None:
+            payload["modelParameters"] = {"seed": int(seed)}
+        if self.mock_mode:
+            rng = np.random.default_rng(seed or 0)
+            h, w = 720, 1280
+            rgb = (rng.random((h, w, 3)) * 255).astype(np.uint8)
+            return WorldLabsAtlasClient.GenerateResult(
+                operation_id="op_mock_generate", request_hash="mock",
+                prompt_used=prompt or "",
+                rgb_frames=[rgb for _ in target_cameras], cameras=target_cameras)
+        async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+            op_id, req_hash, status = await self._run_task(
+                "/tasks:atlasGenerate", payload, idempotency_key, "atlasGenerate")
+            decoded = await self._decode_live_result(
+                client, status, seed or 0, "generate", req_hash, op_id, prompt or "")
+            return WorldLabsAtlasClient.GenerateResult(
+                operation_id=op_id, request_hash=req_hash, prompt_used=decoded.prompt_used,
+                rgb_frames=decoded.rgb_frames, predicted_depths=decoded.predicted_depths,
+                cameras=decoded.cameras)
+
+    async def run_splats_to_mesh(
+        self,
+        splat_asset_id: str,
+        texture_mode: str = "image_texture",
+        texture_size: int = 2048,
+        target_faces: Optional[int] = None,
+        cameras: Optional[List[Dict[str, Any]]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> "WorldLabsAtlasClient.SplatMeshResult":
+        """splats2Mesh: Gaussian splat scene (.spz asset) → GLB mesh asset."""
+        if texture_mode not in ("image_texture", "vertex_color", "none"):
+            raise ValueError("Unknown texture_mode.")
+        payload: Dict[str, Any] = {
+            "splatAsset": {"assetId": splat_asset_id},
+            "textureMode": texture_mode,
+            "textureSize": int(texture_size),
+        }
+        if target_faces:
+            payload["targetFaces"] = int(target_faces)
+        if cameras:
+            payload["cameras"] = [self._camera(c) for c in cameras]
+        if self.mock_mode:
+            import trimesh
+
+            box = trimesh.creation.box(extents=[4.0, 2.0, 2.0])
+            import io as _io
+
+            buf = _io.BytesIO()
+            box.export(buf, file_type="glb")
+            return WorldLabsAtlasClient.SplatMeshResult(
+                operation_id="op_mock_splats", request_hash="mock",
+                mesh_asset_id="mock_asset_splats", mesh_bytes=buf.getvalue())
+        async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+            op_id, req_hash, status = await self._run_task(
+                "/tasks:splats2Mesh", payload, idempotency_key, "splats2Mesh")
+            mesh_block = (status.get("response") or {}).get("mesh", {}) or {}
+            return WorldLabsAtlasClient.SplatMeshResult(
+                operation_id=op_id, request_hash=req_hash,
+                mesh_asset_id=mesh_block.get("assetId", ""),
+                mesh_url=mesh_block.get("url", ""),
+                anchor_positions=(status.get("response") or {}).get("anchorPositions", []))
+
     async def _decode_live_result(self, client: httpx.AsyncClient, status: Dict[str, Any],
                                   seed: int, hypothesis: str, req_hash: str, op_id: str,
                                   prompt: str) -> ChiselRunResult:

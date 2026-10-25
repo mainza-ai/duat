@@ -97,6 +97,46 @@ def test_live_probe_fixture_schema():
 
 
 @respx.mock
+def test_splats_submit_done_returns_mesh():
+    respx.post(f"{BASE}/tasks:splats2Mesh").mock(
+        return_value=httpx.Response(200, json={"id": "ops1", "done": True,
+            "response": {"mesh": {"assetId": "asset_mesh1", "url": "https://cdn/x/m.glb"},
+                          "anchorPositions": [[0, 0, 0]]}}))
+    res = asyncio.run(_client().run_splats_to_mesh("asset_spz1"))
+    assert res.mesh_asset_id == "asset_mesh1"
+    assert res.anchor_positions == [[0, 0, 0]]
+
+
+@respx.mock
+def test_generate_submit_done_returns_frames():
+    respx.post(f"{BASE}/tasks:atlasGenerate").mock(
+        return_value=httpx.Response(200, json={"id": "opg1", "done": True,
+            "response": {"frames": [{"imageAsset": {"url": "https://cdn/x/g.png"}, "camera": CAM}],
+                          "promptUsed": "gen"}}))
+    respx.get("https://cdn/x/g.png").mock(return_value=httpx.Response(200, content=RGB_PNG))
+    res = asyncio.run(_client().run_atlas_generate(
+        context_frames=[{"image_asset_id": "a", "camera": CAM}],
+        target_cameras=[CAM], prompt="x"))
+    assert len(res.rgb_frames) == 1 and res.prompt_used == "gen"
+
+
+def test_splats_endpoint_mock():
+    from fastapi.testclient import TestClient
+
+    from apps.api.main import app
+
+    c = TestClient(app)
+    r = c.post("/api/world/splats2mesh", json={"splat_asset_id": "asset_spz1", "mode": "mock"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["mesh_asset_id"] == "mock_asset_splats"
+    assert body["mesh_glb_b64"].startswith("data:model/gltf-binary;base64,")
+    bad = c.post("/api/world/splats2mesh",
+                 json={"splat_asset_id": "x", "texture_mode": "bogus", "mode": "mock"})
+    assert bad.status_code == 422
+
+
+@respx.mock
 def test_402_maps_to_payment_error():
     respx.post(f"{BASE}/assets").mock(return_value=httpx.Response(200, json={"asset": {"assetId": "a1"}}))
     respx.post(f"{BASE}/tasks:atlasChisel").mock(

@@ -24,7 +24,7 @@ import trimesh
 from scipy.ndimage import gaussian_filter
 from skimage.measure import marching_cubes
 
-from .shaft_model import ShaftParams, _helix_gap, ramp_proximity, shaft_void_sdf
+from .shaft_model import ShaftParams, shaft_void_sdf, spiral_feature_proximity
 
 
 @dataclass
@@ -77,6 +77,7 @@ class KhafreSARVolumeEngine:
         ramp_width_m: float = 2.0,
         ramp_thickness_m: float = 0.8,
         wall_relief_m: float = 0.0,
+        spiral_style: str = "interior_ramp",
         chamber_size_m: float = 80.0,
         seed: int = 42,
     ) -> EpistemicVolumeBundle:
@@ -88,23 +89,17 @@ class KhafreSARVolumeEngine:
         X, Y, Z = np.meshgrid(x, y, z, indexing="ij")
 
         sdf = np.full(self.grid_shape, 100.0, dtype=np.float32)
-        ramp_fields = []
 
         shaft_x_coords = [-40.0, 40.0]
         shaft_y_coords = [-60.0, -20.0, 20.0, 60.0]
         params = ShaftParams(
             radius_m=shaft_radius_m, spiral_pitch_m=spiral_pitch_m,
             ramp_width_m=ramp_width_m, ramp_thickness_m=ramp_thickness_m,
-            wall_relief_m=wall_relief_m)
+            wall_relief_m=wall_relief_m, spiral_style=spiral_style)
         for sx in shaft_x_coords:
             for sy in shaft_y_coords:
                 shaft_sdf = shaft_void_sdf(X, Y, Z, sx, sy, params)
                 sdf = np.minimum(sdf, shaft_sdf)
-                dx_s, dy_s = X - sx, Y - sy
-                r_xy = np.sqrt(dx_s ** 2 + dy_s ** 2)
-                theta = np.arctan2(dy_s, dx_s)
-                ramp_fields.append(ramp_proximity(
-                    r_xy, _helix_gap(Z, theta, params), params))
 
         chamber_centers = [(-40.0, 0.0, -565.0), (40.0, 0.0, -565.0)]
         half_xy = chamber_size_m / 2.0
@@ -129,15 +124,25 @@ class KhafreSARVolumeEngine:
 
         water_table_boost = np.exp(-((Z - (-585.0)) / 12.0) ** 2) * 0.45
         boundary_proximity = np.exp(-(sdf / 4.0) ** 2) * 0.40
-        ramp_dressing = (np.maximum.reduce(ramp_fields) * 0.25
-                         if ramp_fields else 0.0)
+        # Feature dressing evaluated only near shafts (12 m box): the full-grid
+        # alternative costs minutes of transcendentals for identical output.
+        feat_dressing = np.zeros(self.grid_shape, dtype=np.float32)
+        for sx in shaft_x_coords:
+            for sy in shaft_y_coords:
+                near = ((np.abs(X - sx) < 12.0) & (np.abs(Y - sy) < 12.0)
+                        & (Z > -600.0) & (Z < 0.0))
+                if np.any(near):
+                    prox = spiral_feature_proximity(
+                        X[near], Y[near], Z[near], sx, sy, params)
+                    feat_dressing[near] = np.maximum(feat_dressing[near], prox)
+        feat_dressing = feat_dressing * 0.25
         stratigraphy_bands = 0.10 * (0.5 + 0.5 * np.sin(Z * 0.08))
         noise_field = gaussian_filter(
             rng.normal(0.0, 0.08, size=self.grid_shape).astype(np.float32), sigma=1.5
         )
         reflectivity = np.clip(
             0.15 + boundary_proximity + water_table_boost + stratigraphy_bands
-            + ramp_dressing + noise_field,
+            + feat_dressing + noise_field,
             0.0, 1.0,
         ).astype(np.float32)
 
@@ -167,9 +172,10 @@ class KhafreSARVolumeEngine:
             img = cv2.imread(str(p), cv2.IMREAD_COLOR)
             if img is None:
                 raise FileNotFoundError(f"Could not read SAR slice image: {p}")
-            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32) / 255.0
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
-            anomaly_response = 0.65 * hsv[..., 1] * hsv[..., 2] + 0.35 * gray
+            # True jet-transfer inversion (slices.decode_jet_anomaly), not HSV.
+            from .slices import decode_jet_anomaly
+
+            anomaly_response, _slice_valid = decode_jet_anomaly(img)
             target_w = nx if slice_axis.lower() == "y" else ny
             resized = cv2.resize(anomaly_response, (target_w, nz), interpolation=cv2.INTER_CUBIC)
             loaded_slices.append(np.flipud(resized).T)

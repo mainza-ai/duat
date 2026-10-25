@@ -170,6 +170,7 @@ class EnsembleExploreRequest(BaseModel):
         default=0.18, ge=0.0, le=2.0,
         description="Posterior geometry spread (modeling choice; NOT demonstrated "
                     "orbital-SAR precision — see claims khafre-2025-press).")
+    spiral_style: Literal["interior_ramp", "exterior_coil"] = "interior_ramp"
     structural_weight: float = Field(default=0.3, ge=0.0, le=1.0)
     posterior_resample: bool = True
     chain_batches: int = Field(default=2, ge=1, le=16)
@@ -206,6 +207,7 @@ class DepthRenderRequest(BaseModel):
     out_height: int = Field(default=90, ge=18, le=360)
     seed: int = 7
     shaft_center_xy: List[float] = Field(default_factory=lambda: [-40.0, -20.0])
+    spiral_style: Literal["interior_ramp", "exterior_coil"] = "interior_ramp"
 
 
 class DepthRenderResponse(BaseModel):
@@ -268,15 +270,16 @@ def _get_bundle() -> EpistemicVolumeBundle:
 _VOLUME_CACHE: Dict[tuple, EpistemicVolumeBundle] = {}
 
 
-def _get_bundle_for(seed: int, chamber_size_m: float) -> EpistemicVolumeBundle:
-    """Parameter-cached volumes (seed × chamber size); bounded LRU of 2 because
-    each full-grid bundle holds ~50 MB+ of float32 fields."""
-    key = (int(seed), round(float(chamber_size_m), 2))
+def _get_bundle_for(seed: int, chamber_size_m: float,
+                    spiral_style: str = "interior_ramp") -> EpistemicVolumeBundle:
+    """Parameter-cached volumes (seed × chamber × spiral variant); bounded LRU
+    of 2 because each full-grid bundle holds ~50 MB+ of float32 fields."""
+    key = (int(seed), round(float(chamber_size_m), 2), spiral_style)
     if key not in _VOLUME_CACHE:
         while len(_VOLUME_CACHE) >= 2:
             _VOLUME_CACHE.pop(next(iter(_VOLUME_CACHE)))
         _VOLUME_CACHE[key] = VOLUME_ENGINE.synthesize_khafre_subterranean_complex(
-            seed=key[0], chamber_size_m=key[1])
+            seed=key[0], chamber_size_m=key[1], spiral_style=spiral_style)
     return _VOLUME_CACHE[key]
 
 
@@ -385,7 +388,7 @@ async def _run_ensemble(
         log_u8, refl_u8, valid = render_shaft_planar_depth_and_reflectivity(
             cam_origin_xyz=tuple(req.camera.pose.position),
             width=req.camera.width, height=req.camera.height, fx=req.camera.fx,
-            z_min=req.z_min, z_max=z_max,
+            z_min=req.z_min, z_max=z_max, spiral_style=req.spiral_style,
             noise_sigma_m=req.sensor_noise_sigma_m, seed=rs)
         depth_runs.append((log_u8, refl_u8, valid))
     log_depth_u8, reflectivity_u8, valid_mask = depth_runs[0]
@@ -415,12 +418,24 @@ async def _run_ensemble(
 
     manifest = {"camera": atlas_cam, "prompt": prompt, "seeds": req.seeds,
                 "voxel_size": req.voxel_size, "z_min": req.z_min, "z_max": z_max,
+                "spiral_style": req.spiral_style,
                 "child_hashes": [r.request_hash for r in results]}
     sha = provenance_manifest(manifest)
     record = {"manifest": manifest, "timestamp_utc": time.time()}
     store.record_ensemble(sha, record)
     for r in results:
         store.update_operation(r.operation_id, "succeeded")
+    # Persistent world state: consensus RGB + conditioning depth per run.
+    try:
+        ok_rgb, buf_rgb = cv2.imencode(".png", cv2.cvtColor(consensus_rgb, cv2.COLOR_RGB2BGR))
+        ok_d, buf_d = cv2.imencode(".png", log_depth_u8)
+        if ok_rgb and ok_d:
+            rgb_ref = store.store_bytes(buf_rgb.tobytes(), kind="png")
+            d_ref = store.store_bytes(buf_d.tobytes(), kind="png")
+            store.record_frame(job_id, results[0].operation_id if results else "", "ensemble",
+                               atlas_cam, rgb_ref["sha256"], d_ref["sha256"], sha)
+    except Exception:
+        pass
 
     empty_ratio = float(1.0 - (np.count_nonzero(valid_mask) / valid_mask.size))
     if progress_cb:
@@ -487,7 +502,7 @@ async def _run_chain(
         for t in seg:
             log_u8, _, _ = render_shaft_planar_depth_and_reflectivity(
                 cam_origin_xyz=tuple(t["extrinsics"]["position"]),
-                z_min=req.z_min, z_max=z_max,
+                z_min=req.z_min, z_max=z_max, spiral_style=req.spiral_style,
                 seed=(req.seeds[0] if req.seeds else 7) + b)
             ctx.append((t, log_u8))
         srcs = [carry] if carry else []
@@ -513,6 +528,21 @@ async def _run_chain(
                 ref = await client.create_asset_inline(buf.tobytes(), f"chain_b{b}.png")
                 carry = {"imageAsset": {"assetId": ref["assetId"]}, "camera": seg[-1]}
                 batch_rec["carry_asset_id"] = ref["assetId"]
+            # Persistent world state per hop (RGB always; predicted depth when returned).
+            try:
+                import io as _io
+
+                if ok:
+                    rgb_ref = store.store_bytes(buf.tobytes(), kind="png")
+                    d_sha = ""
+                    if res.predicted_depths:
+                        bio = _io.BytesIO()
+                        np.save(bio, np.asarray(res.predicted_depths[-1], dtype=np.float32))
+                        d_sha = store.store_bytes(bio.getvalue(), kind="npy")["sha256"]
+                    store.record_frame(job_id, res.operation_id, "chain", seg[-1],
+                                       rgb_ref["sha256"], d_sha, "")
+            except Exception:
+                pass
         if progress_cb:
             progress_cb((b - req.start_batch + 1) / max(total_batches - req.start_batch, 1))
     return {"batches": out, "prompt": prompt,
@@ -649,6 +679,34 @@ async def readiness() -> Dict[str, Any]:
                         content={"ready": ready, "volume_loaded": CACHED_BUNDLE is not None})
 
 
+@app.get("/api/frames")
+async def list_frames(limit: int = 100, job_id: Optional[str] = None) -> Dict[str, Any]:
+    """Persistent world state: every recorded RGBD frame with its pose."""
+    return {"frames": [{k: f[k] for k in ("id", "job_id", "op_id", "kind", "provenance_sha", "created_ts")}
+                       for f in store.list_frames(limit=limit, job_id=job_id)]}
+
+
+@app.get("/api/frames/{frame_id}/rgb")
+async def frame_rgb(frame_id: str) -> Any:
+    from fastapi.responses import Response
+
+    fr = store.get_frame(frame_id)
+    if fr is None or not fr["rgb_sha"]:
+        raise HTTPException(status_code=404, detail="Unknown frame.")
+    return Response(content=store.load_bytes(fr["rgb_sha"]), media_type="image/png")
+
+
+@app.get("/api/frames/{frame_id}/depth")
+async def frame_depth(frame_id: str) -> Any:
+    from fastapi.responses import Response
+
+    fr = store.get_frame(frame_id)
+    if fr is None or not fr["depth_sha"]:
+        raise HTTPException(status_code=404, detail="No depth stored for frame.")
+    return Response(content=store.load_bytes(fr["depth_sha"]),
+                    media_type="application/octet-stream")
+
+
 @app.get("/api/provenance/{sha}")
 async def get_provenance(sha: str) -> Dict[str, Any]:
     rec = store.get_ensemble(sha)
@@ -716,7 +774,7 @@ async def render_depth(req: DepthRenderRequest) -> DepthRenderResponse:
         cam_origin_xyz=tuple(req.camera.pose.position),
         width=req.out_width, height=req.out_height, fx=fx, fy=fy, cx=cx, cy=cy,
         z_min=req.z_min, z_max=z_max, shaft_center_xy=tuple(req.shaft_center_xy),
-        noise_sigma_m=0.0, seed=req.seed)
+        spiral_style=req.spiral_style, noise_sigma_m=0.0, seed=req.seed)
     return DepthRenderResponse(
         log_depth_b64=_encode_png_b64(log_u8), reflectivity_b64=_encode_png_b64(refl_u8),
         width=req.out_width, height=req.out_height, fx=fx, fy=fy, cx=cx, cy=cy,
@@ -727,19 +785,96 @@ async def render_depth(req: DepthRenderRequest) -> DepthRenderResponse:
 _GLB_CACHE: Dict[tuple, bytes] = {}
 
 
-@app.get("/api/khafre/mesh-glb")
-async def posterior_mesh_glb(posterior_seed: Optional[int] = None) -> Any:
-    """Shaft-column posterior mesh as GLB (cached per seed). The overlay the 3D
-    view renders beside the analytic prop: real posterior geometry, not paint."""
+_GLB_CACHE: Dict[tuple, bytes] = {}
+
+
+def _complex_parts() -> List[Dict[str, Any]]:
+    """Full claimed complex as named primitives (backend Z-up frame)."""
+    parts: List[Dict[str, Any]] = [
+        {"name": "khafre_pyramid", "kind": "pyramid", "base_m": 215.0, "height_m": 143.5,
+         "claim_ids": ["khafre-2025-press"]},
+        {"name": "limestone_platform", "kind": "box", "center": [0.0, 0.0, -10.0],
+         "size": [200.0, 200.0, 20.0], "claim_ids": ["khafre-2025-press"]},
+    ]
+    for xi, sx in enumerate([-40.0, 40.0]):
+        for yi, sy in enumerate([-60.0, -20.0, 20.0, 60.0]):
+            parts.append({"name": f"shaft_{xi * 4 + yi}", "kind": "shaft",
+                          "center": [sx, sy, -282.5], "radius_m": 5.5, "height_m": 535.0,
+                          "claim_ids": ["khafre-2025-press"]})
+    for i, (cx, cy) in enumerate([(-40.0, 0.0), (40.0, 0.0)]):
+        parts.append({"name": f"basal_chamber_{i}", "kind": "box",
+                      "center": [cx, cy, -565.0], "size": [80.0, 80.0, 50.0],
+                      "claim_ids": ["khafre-2025-press"]})
+    parts.append({"name": "water_table", "kind": "water", "center": [0.0, 0.0, -585.0],
+                  "size": [240.0, 240.0, 1.0], "claim_ids": ["khafre-2025-press"]})
+    return parts
+
+
+@app.get("/api/khafre/complex")
+async def complex_metadata() -> Dict[str, Any]:
+    return {"coordinate_frame": "z_up", "claim_ids": KHAFRE_DATASET_CLAIM_IDS,
+            "water_z_m": -585.0, "parts": _complex_parts()}
+
+
+@app.get("/api/khafre/complex-glb")
+async def complex_glb() -> Any:
+    """Full-complex overview mesh (primitives, no marching cubes): pyramid shell,
+    platform, 8 shafts, 2 chambers, water plane. Backend Z-up frame."""
     from fastapi.responses import Response
 
-    key = (posterior_seed if posterior_seed is not None else -1,)
+    key = ("complex",)
+    if key not in _GLB_CACHE:
+        scene = trimesh.Scene()
+        colors = {"pyramid": [210, 180, 140, 255], "box": [170, 150, 120, 255],
+                  "shaft": [90, 140, 200, 255], "water": [60, 120, 220, 140]}
+        for part in _complex_parts():
+            kind = part["kind"]
+            if kind == "pyramid":
+                b, hgt = part["base_m"], part["height_m"]
+                verts = np.array([[-b / 2, -b / 2, 0], [b / 2, -b / 2, 0], [b / 2, b / 2, 0],
+                                  [-b / 2, b / 2, 0], [0, 0, hgt]], dtype=np.float64)
+                faces = np.array([[0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4], [0, 2, 1], [0, 3, 2]])
+                mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=True)
+            elif kind == "shaft":
+                cx, cy, cz = part["center"]
+                mesh = trimesh.creation.cylinder(radius=part["radius_m"], height=part["height_m"], sections=24)
+                mesh.apply_translation([cx, cy, cz])
+            elif kind == "water":
+                mesh = trimesh.creation.box(extents=part["size"])
+                mesh.apply_translation(part["center"])
+            else:
+                mesh = trimesh.creation.box(extents=part["size"])
+                mesh.apply_translation(part["center"])
+            mesh.visual.vertex_colors = np.tile(
+                np.array(colors.get(kind, [150, 150, 150, 255]), dtype=np.uint8),
+                (len(mesh.vertices), 1))
+            scene.add_geometry(mesh, geom_name=part["name"])
+        import io
+
+        buf = io.BytesIO()
+        scene.export(buf, file_type="glb")
+        _GLB_CACHE[key] = buf.getvalue()
+    data = _GLB_CACHE[key]
+    return Response(content=data, media_type="model/gltf-binary",
+                    headers={"X-Mesh-SHA256": hashlib.sha256(data).hexdigest()[:16]})
+
+
+@app.get("/api/khafre/mesh-glb")
+async def posterior_mesh_glb(posterior_seed: Optional[int] = None,
+                             spiral_style: str = "interior_ramp") -> Any:
+    """Shaft-column posterior mesh as GLB (cached per seed × spiral variant).
+    The overlay the 3D view renders beside the analytic prop."""
+    from fastapi.responses import Response
+
+    if spiral_style not in ("interior_ramp", "exterior_coil"):
+        raise HTTPException(status_code=422, detail="Unknown spiral_style.")
+    key = (posterior_seed if posterior_seed is not None else -1, spiral_style)
     if key not in _GLB_CACHE:
         while len(_GLB_CACHE) >= 4:
             _GLB_CACHE.pop(next(iter(_GLB_CACHE)))
         import io
 
-        bundle = _get_bundle()
+        bundle = _get_bundle_for(42, 80.0, spiral_style)
         mesh = VOLUME_ENGINE.extract_posterior_cavity_mesh(
             bundle, posterior_seed=posterior_seed,
             roi_bounds_min_m=(-52.0, -32.0, -120.0),
@@ -751,6 +886,83 @@ async def posterior_mesh_glb(posterior_seed: Optional[int] = None) -> Any:
     return Response(content=data, media_type="model/gltf-binary",
                     headers={"Content-Disposition": "attachment; filename=khafre_posterior.glb",
                              "X-Mesh-SHA256": hashlib.sha256(data).hexdigest()[:16]})
+
+
+class SliceDecodeResponse(BaseModel):
+    filename: str
+    width: int
+    height: int
+    masked_fraction: float
+    anomaly_b64: str
+    peak_count: int
+    peak_positions_norm: List[float]
+    prominences: List[float]
+
+
+class SplatMeshRequest(BaseModel):
+    splat_asset_id: str
+    texture_mode: Literal["image_texture", "vertex_color", "none"] = "image_texture"
+    texture_size: int = Field(default=2048, ge=1, le=8192)
+    target_faces: Optional[int] = Field(default=None, ge=1)
+    mode: Literal["mock", "live"] = "mock"
+
+
+@app.post("/api/world/splats2mesh")
+async def splats_to_mesh(req: SplatMeshRequest) -> Dict[str, Any]:
+    """Gaussian splat scene → GLB mesh asset (mock returns a labeled placeholder)."""
+    client = _client_for_mode(req.mode)
+    res = await client.run_splats_to_mesh(
+        req.splat_asset_id, texture_mode=req.texture_mode,
+        texture_size=req.texture_size, target_faces=req.target_faces)
+    store.record_operation(res.operation_id, "splats2Mesh", res.request_hash)
+    body: Dict[str, Any] = {"operation_id": res.operation_id,
+                            "mesh_asset_id": res.mesh_asset_id,
+                            "anchor_positions": res.anchor_positions}
+    if res.mesh_bytes:
+        import base64 as _b64
+
+        body["mesh_glb_b64"] = "data:model/gltf-binary;base64," + _b64.b64encode(res.mesh_bytes).decode("ascii")
+    else:
+        body["mesh_url"] = res.mesh_url
+    return body
+
+
+@app.post("/api/khafre/slices")
+async def decode_slices(files: List[UploadFile],
+                         mask_rects_json: Optional[str] = None) -> Dict[str, Any]:
+    """Decode tomographic slice imagery (jet heatmaps, grayscale scans) into
+    anomaly fields with legend masking + shaft-stripe peak counts."""
+    from .pipeline.slices import decode_jet_anomaly, stripe_peaks
+
+    mask_rects = None
+    if mask_rects_json:
+        try:
+            mask_rects = [tuple(float(v) for v in r) for r in json.loads(mask_rects_json)]
+        except Exception:
+            raise HTTPException(status_code=422, detail="mask_rects_json must be a list of [x0,y0,x1,y1].")
+    out = []
+    for f in files:
+        raw = await f.read(26 * 1024 * 1024 + 1)
+        if len(raw) > 25 * 1024 * 1024 or not raw:
+            raise HTTPException(status_code=413 if raw else 422,
+                                detail="File empty or over the 25 MB cap.")
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None:
+            raise HTTPException(status_code=422, detail=f"Could not decode image: {f.filename}")
+        anomaly, valid = decode_jet_anomaly(img, mask_rects)
+        peaks = stripe_peaks(anomaly, valid)
+        masked_frac = round(1.0 - float(np.count_nonzero(valid) / valid.size), 4)
+        if masked_frac > 0.90:
+            raise HTTPException(status_code=422,
+                                detail=f"{f.filename}: >90% masked — image is legend, not field.")
+        vis = np.round(anomaly * 255.0).astype(np.uint8)
+        out.append({"filename": f.filename, "width": int(img.shape[1]), "height": int(img.shape[0]),
+                    "masked_fraction": masked_frac, "anomaly_b64": _encode_png_b64(vis),
+                    "peak_count": peaks["peak_count"],
+                    "peak_positions_norm": peaks["peak_positions_norm"],
+                    "prominences": peaks["prominences"]})
+    return {"slices": out}
 
 
 @app.post("/api/khafre/mesh")

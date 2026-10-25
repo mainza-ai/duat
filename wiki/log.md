@@ -1,3 +1,11 @@
+## [2026-10-25] build | W-A…W-E world-model program ($0 spend)
+
+- True slice pipeline (jet inversion, legend masking, peak counts, viewer).
+- Full-complex overview (pyramid→water), dive, exaggeration, depth ruler.
+- Exterior-coil spiral variant end-to-end; 12 claim anchors + sprite pins + panel.
+- Frame store + fused accumulate cloud; splats/atlasGenerate clients + tests.
+- Suite 49 passed; visual gate green on dev. Plan marked built in dev-docs.
+
 ## [2026-10-25] build | K1–K6 Khafre program implemented ($0 spend)
 
 - Claim registry (7 records, retraction + outlet variance) + /api/claims;

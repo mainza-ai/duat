@@ -281,6 +281,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
   const [hypothesis, setHypothesis] = useState<Hypothesis>("megalithic");
   const [voxelSize, setVoxelSize] = useState(0.25);
   const [sensorNoise, setSensorNoise] = useState(0.18);
+  const [spiral, setSpiral] = useState<"interior_ramp" | "exterior_coil">("interior_ramp");
   const [mode, setMode] = useState<RunMode | "live-probe" | "live">("mock");
   const [armingLive, setArmingLive] = useState<null | RunMode>(null);
   const [layers, setLayers] = useState<LayerUris | null>(null);
@@ -293,6 +294,9 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
   const [compare, setCompare] = useState<{ status: "idle" | "loading" | "error" | "done"; thumbs: { h: Hypothesis; uri: string }[] }>({ status: "idle", thumbs: [] });
   const [exporting, setExporting] = useState(false);
   const [sampleSrc, setSampleSrc] = useState<SampleSource | null>(null);
+  const [slices, setSlices] = useState<{ filename: string; anomaly_b64: string; peak_count: number; peak_positions_norm: number[]; masked_fraction: number }[]>([]);
+  const [sliceBusy, setSliceBusy] = useState(false);
+  const [sliceError, setSliceError] = useState<string | null>(null);
   const [lastNBV, setLastNBV] = useState<{ target_z_m: number; predicted_variance_reduction_pct: number } | null>(null);
   const proc = useProceduralKhafreTextures(hypothesis);
 
@@ -325,6 +329,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
     camera: { pose: { position: [-38.5, -20.0, -45.0], quaternion: [0, 0, 0, 1] } },
     hypothesis: h, instrument_rig: "drop_flare", seeds,
     mode: liveMode, voxel_size: voxelSize, sensor_noise_sigma_m: sensorNoise,
+    spiral_style: spiral,
   });
 
   const layersFromResponse = (res: EnsembleResponse): LayerUris => ({
@@ -424,7 +429,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
             <span className="font-semibold tracking-wider uppercase text-slate-200">MILIMO DUAT // MODEL PREDICTION — CONDITIONED ON KHAFRE SAR GEOMETRY</span>
           </div>
           <div className="flex items-center gap-4 font-mono text-[11px] text-slate-400">
-            <span>TASK: atlasChisel</span><span>VOXEL_GAUGE: {voxelSize.toFixed(2)}m</span>
+            <span>TASK: atlasChisel</span><span>VOXEL_GAUGE: {voxelSize.toFixed(2)}m</span><span className="text-slate-500">SPIRAL:{spiral === "interior_ramp" ? "RAMP" : "COIL"}</span>
             <span className="text-[#00F0FF]">CAM #04/32 (1280×720 PINHOLE)</span>
           </div>
         </div>
@@ -597,6 +602,60 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
                 onChange={(e) => setSensorNoise(parseFloat(e.target.value))} className="w-full accent-[#FFB800]" />
             </div>
             <p className="text-[11px] text-slate-500 leading-relaxed">Finer voxels preserve blockout detail; higher σ widens the posterior ensemble spread.</p>
+            <div>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-slate-300 font-medium">Spiral reading</span>
+                <span className="font-mono text-[10px] text-slate-500">{spiral === "interior_ramp" ? "walkway" : "coil"}</span></div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {(["interior_ramp", "exterior_coil"] as const).map((s) => (
+                  <button key={s} onClick={() => setSpiral(s)}
+                    title={s === "interior_ramp" ? "Interior walkway shelf (our reading)" : "Exterior wrap (claimants' diagram)"}
+                    className={`px-2 py-1.5 rounded-md border text-[11px] transition ${spiral === s ? "bg-slate-800 border-[#00F0FF] text-white font-medium" : "bg-[#090A0F] border-slate-800 text-slate-400"}`}>
+                    {s === "interior_ramp" ? "Interior ramp" : "Exterior coil"}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
+            <Layers className="w-4 h-4 text-[#FFB800]" /><span>SAR Slice Ingest</span></div>
+          <div className="bg-[#090A0F] p-4 rounded-lg border border-slate-800/80 text-xs space-y-2">
+            <label className="block px-3 py-2 rounded-md border border-slate-700 text-center cursor-pointer hover:border-[#00F0FF] transition">
+              {sliceBusy ? "Decoding…" : "Upload tomography slice(s)"}
+              <input type="file" accept="image/*" multiple className="hidden"
+                onChange={async (e) => {
+                  const files = e.target.files;
+                  if (!files || files.length === 0) return;
+                  setSliceBusy(true); setSliceError(null);
+                  try {
+                    const fd = new FormData();
+                    for (const f of Array.from(files)) fd.append("files", f);
+                    const res = await fetch(`${apiBaseUrl}/api/khafre/slices`, { method: "POST", body: fd });
+                    if (!res.ok) throw new Error(await res.text());
+                    setSlices((await res.json()).slices);
+                  } catch (err) {
+                    setSliceError(err instanceof Error ? err.message.slice(0, 160) : "decode failed");
+                  } finally {
+                    setSliceBusy(false);
+                    e.target.value = "";
+                  }
+                }} />
+            </label>
+            {sliceError && <div className="font-mono text-[11px] text-[#FF2D55]">{sliceError}</div>}
+            {slices.map((s) => (
+              <div key={s.filename} className="pt-1">
+                <div className="flex justify-between font-mono text-[11px] text-slate-400 mb-1">
+                  <span className="truncate text-slate-300">{s.filename}</span>
+                  <span>{s.peak_count} stripes · masked {Math.round(s.masked_fraction * 100)}%</span>
+                </div>
+                <img src={s.anomaly_b64} alt={`decoded ${s.filename}`} className="rounded border border-slate-700 w-full" />
+                {s.peak_positions_norm.length > 0 && (
+                  <div className="font-mono text-[10px] text-slate-500 mt-1">peaks @ {s.peak_positions_norm.map((p) => p.toFixed(2)).join(", ")}</div>
+                )}
+              </div>
+            ))}
+            <p className="text-[11px] text-slate-500 leading-relaxed">Jet heatmaps invert through the transfer function; legends/frames are masked, never interpolated.</p>
           </div>
         </div>
         {pinned && (

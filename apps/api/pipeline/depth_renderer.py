@@ -119,6 +119,7 @@ def render_shaft_planar_depth_and_reflectivity(
     ramp_width_m: float = 2.0,
     ramp_thickness_m: float = 0.8,
     wall_relief_m: float = 0.0,
+    spiral_style: str = "interior_ramp",
     n_steps: int = 96,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Raymarch the shared shaft model; returns (log_depth_u8, refl_u8, valid_mask).
@@ -127,7 +128,7 @@ def render_shaft_planar_depth_and_reflectivity(
     so the conditioning geometry is identical to the extracted meshes by
     construction — they share `shaft_model.shaft_void_sdf`.
     """
-    from .shaft_model import ShaftParams, _helix_gap, ramp_proximity, shaft_void_sdf
+    from .shaft_model import ShaftParams, spiral_feature_proximity, shaft_void_sdf
 
     rng = np.random.default_rng(seed)
     fx = fx or float((width / 2.0) / np.tan(np.radians(70.0 / 2.0)))
@@ -140,7 +141,7 @@ def render_shaft_planar_depth_and_reflectivity(
                     cam_origin_xyz[1] - shaft_center_xy[1], cam_origin_xyz[2]], dtype=np.float32)
     params = ShaftParams(radius_m=shaft_radius_m, spiral_pitch_m=spiral_pitch_m,
                          ramp_width_m=ramp_width_m, ramp_thickness_m=ramp_thickness_m,
-                         wall_relief_m=wall_relief_m)
+                         wall_relief_m=wall_relief_m, spiral_style=spiral_style)
     t = np.full((height, width), z_min, dtype=np.float32)
     hit = np.zeros((height, width), dtype=bool)
     for _ in range(n_steps):
@@ -157,11 +158,11 @@ def render_shaft_planar_depth_and_reflectivity(
 
     log_depth_u8 = encode_log_depth_png(planar_z, z_min, z_max)
     hit_pts = rel + dirs * t[..., None]
-    hit_r = np.sqrt(hit_pts[..., 0] ** 2 + hit_pts[..., 1] ** 2)
-    hit_ang = np.arctan2(hit_pts[..., 1], hit_pts[..., 0])
-    ramp_band = ramp_proximity(hit_r, _helix_gap(hit_pts[..., 2], hit_ang, params), params)
+    feat_band = spiral_feature_proximity(
+        hit_pts[..., 0], hit_pts[..., 1], hit_pts[..., 2],
+        0.0, 0.0, params)
     moisture = np.clip((-hit_pts[..., 2]) / 600.0, 0.0, 1.0) * 0.35
-    refl = np.where(valid, np.clip(0.25 + 0.35 * ramp_band + moisture, 0.0, 1.0), 0.0)
+    refl = np.where(valid, np.clip(0.25 + 0.35 * feat_band + moisture, 0.0, 1.0), 0.0)
     return log_depth_u8, np.round(refl * 255.0).astype(np.uint8), valid
 
 

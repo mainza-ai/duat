@@ -62,8 +62,20 @@ CREATE TABLE IF NOT EXISTS ensembles (
     manifest_json TEXT NOT NULL,
     created_ts REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS frames (
+    id TEXT PRIMARY KEY,
+    job_id TEXT,
+    op_id TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'ensemble',
+    camera_json TEXT NOT NULL DEFAULT '{}',
+    rgb_sha TEXT NOT NULL DEFAULT '',
+    depth_sha TEXT NOT NULL DEFAULT '',
+    provenance_sha TEXT NOT NULL DEFAULT '',
+    created_ts REAL NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_ops_job ON operations(job_id);
+CREATE INDEX IF NOT EXISTS idx_frames_job ON frames(job_id);
 """
 
 
@@ -166,6 +178,40 @@ def get_ensemble(provenance_sha256: str) -> Optional[Dict[str, Any]]:
         row = con.execute("SELECT * FROM ensembles WHERE provenance_sha256=?",
                           (provenance_sha256,)).fetchone()
         return dict(row) if row else None
+
+
+# ---------------- frames (persistent world state) ----------------
+def record_frame(job_id: Optional[str], op_id: str, kind: str,
+                 camera: Dict[str, Any], rgb_sha: str, depth_sha: str = "",
+                 provenance_sha: str = "") -> str:
+    import uuid as _uuid
+
+    fid = "fr_" + _uuid.uuid4().hex[:16]
+    with _lock, _connect() as con:
+        con.execute(
+            "INSERT INTO frames(id, job_id, op_id, kind, camera_json, rgb_sha,"
+            " depth_sha, provenance_sha, created_ts) VALUES (?,?,?,?,?,?,?,?,?)",
+            (fid, job_id, op_id, kind, json.dumps(camera), rgb_sha,
+             depth_sha, provenance_sha, _now()))
+    return fid
+
+
+def get_frame(frame_id: str) -> Optional[Dict[str, Any]]:
+    with _lock, _connect() as con:
+        row = con.execute("SELECT * FROM frames WHERE id=?", (frame_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def list_frames(limit: int = 100, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    with _lock, _connect() as con:
+        if job_id:
+            rows = con.execute(
+                "SELECT * FROM frames WHERE job_id=? ORDER BY created_ts DESC LIMIT ?",
+                (job_id, limit)).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM frames ORDER BY created_ts DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
 
 
 # ---------------- artifacts ----------------
