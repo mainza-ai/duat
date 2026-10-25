@@ -445,7 +445,9 @@ class WorldLabsAtlasClient:
         var = np.sin(planar_z * 2.5 + seed * 1.7) * np.clip(edge * 0.4, 0.0, 0.35)
         shading = np.clip(normal_z * 0.85 + grain * 0.08 + var, 0.0, 1.2) * falloff
         base = {"megalithic": np.array([182.0, 156.0, 120.0]),
-                "karst": np.array([98.0, 142.0, 155.0])}.get(hypothesis, np.array([85.0, 200.0, 235.0]))
+                "karst": np.array([98.0, 142.0, 155.0]),
+                "bedrock_null": np.array([104.0, 96.0, 88.0])}.get(
+                    hypothesis, np.array([85.0, 200.0, 235.0]))
         rgb = np.zeros((h, w, 3), dtype=np.uint8)
         for c in range(3):
             rgb[..., c] = np.where(valid, np.clip(base[c] * shading, 0, 255), 0).astype(np.uint8)

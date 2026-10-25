@@ -1,3 +1,14 @@
+## [2026-10-25] build | K1–K6 Khafre program implemented ($0 spend)
+
+- Claim registry (7 records, retraction + outlet variance) + /api/claims;
+  null prior everywhere; chamber-size ranges (80/90) with cache; mixer chips.
+- Validated void benchmarks (NFC 9×2×2, Big Void 30×6) + endpoint; wiki rewritten;
+  UNVERIFIED-CLAIM chip in UI; NBV callout driven by live responses.
+- Geometry remodel: shared shaft_model (cylinder minus helical ramp solid),
+  renderer matches by construction; 3D prop is plain cylinder + instanced steps;
+  near/far 1/400, polygonOffset, display-range control, GLB posterior overlay.
+- Suite 36 passed; visual gate green on prod build. Plan statuses updated in dev-docs.
+
 ## [2026-10-25] build | Phases 0–5 implemented under 1,000-credit cap (1 live task)
 
 - Mode flag (mock/live/probe) + spend confirm, deterministic idempotency keys,

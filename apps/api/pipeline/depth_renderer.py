@@ -115,11 +115,20 @@ def render_shaft_planar_depth_and_reflectivity(
     seed: int = 42,
     shaft_center_xy: Tuple[float, float] = (-40.0, -20.0),
     shaft_radius_m: float = 5.5,
-    spiral_amp_m: float = 0.95,
     spiral_pitch_m: float = 28.0,
+    ramp_width_m: float = 2.0,
+    ramp_thickness_m: float = 0.8,
+    wall_relief_m: float = 0.0,
     n_steps: int = 96,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Raymarch analytic helical shaft; returns (log_depth_u8, refl_u8, valid_mask)."""
+    """Raymarch the shared shaft model; returns (log_depth_u8, refl_u8, valid_mask).
+
+    Marching uses the bundle-convention SDF negated (positive = safe void),
+    so the conditioning geometry is identical to the extracted meshes by
+    construction — they share `shaft_model.shaft_void_sdf`.
+    """
+    from .shaft_model import ShaftParams, _helix_gap, ramp_proximity, shaft_void_sdf
+
     rng = np.random.default_rng(seed)
     fx = fx or float((width / 2.0) / np.tan(np.radians(70.0 / 2.0)))
     fy = fy or fx
@@ -129,14 +138,14 @@ def render_shaft_planar_depth_and_reflectivity(
 
     rel = np.array([cam_origin_xyz[0] - shaft_center_xy[0],
                     cam_origin_xyz[1] - shaft_center_xy[1], cam_origin_xyz[2]], dtype=np.float32)
-    omega = (2.0 * np.pi) / spiral_pitch_m
+    params = ShaftParams(radius_m=shaft_radius_m, spiral_pitch_m=spiral_pitch_m,
+                         ramp_width_m=ramp_width_m, ramp_thickness_m=ramp_thickness_m,
+                         wall_relief_m=wall_relief_m)
     t = np.full((height, width), z_min, dtype=np.float32)
     hit = np.zeros((height, width), dtype=bool)
     for _ in range(n_steps):
         pts = rel + dirs * t[..., None]
-        ang = np.arctan2(pts[..., 1], pts[..., 0])
-        spiral = spiral_amp_m * np.sin(omega * pts[..., 2] + 2.0 * ang)
-        sdf = (shaft_radius_m + spiral) - np.sqrt(pts[..., 0] ** 2 + pts[..., 1] ** 2)
+        sdf = -shaft_void_sdf(pts[..., 0], pts[..., 1], pts[..., 2], 0.0, 0.0, params)
         newly = (sdf <= 0.025) & (~hit) & (t < z_max)
         hit |= newly
         t = np.where(hit, t, t + np.maximum(sdf * 0.65, 0.06))
@@ -148,10 +157,11 @@ def render_shaft_planar_depth_and_reflectivity(
 
     log_depth_u8 = encode_log_depth_png(planar_z, z_min, z_max)
     hit_pts = rel + dirs * t[..., None]
+    hit_r = np.sqrt(hit_pts[..., 0] ** 2 + hit_pts[..., 1] ** 2)
     hit_ang = np.arctan2(hit_pts[..., 1], hit_pts[..., 0])
-    spiral_band = 0.5 + 0.5 * np.sin(omega * hit_pts[..., 2] + 2.0 * hit_ang)
+    ramp_band = ramp_proximity(hit_r, _helix_gap(hit_pts[..., 2], hit_ang, params), params)
     moisture = np.clip((-hit_pts[..., 2]) / 600.0, 0.0, 1.0) * 0.35
-    refl = np.where(valid, np.clip(0.25 + 0.5 * spiral_band + moisture, 0.0, 1.0), 0.0)
+    refl = np.where(valid, np.clip(0.25 + 0.35 * ramp_band + moisture, 0.0, 1.0), 0.0)
     return log_depth_u8, np.round(refl * 255.0).astype(np.uint8), valid
 
 

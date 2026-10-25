@@ -27,6 +27,8 @@ from pydantic import BaseModel, Field
 
 from .pipeline import store as store
 
+from .pipeline.claims import KHAFRE_DATASET_CLAIM_IDS, VALID_STATUSES, get_claim, list_claims
+
 from .pipeline.depth_renderer import render_shaft_planar_depth_and_reflectivity
 from .pipeline.ensemble import (compute_consensus, compute_disagreement, disagreement_to_u8,
                                 provenance_manifest)
@@ -160,11 +162,14 @@ async def _atlas_error_handler(request: Any, exc: AtlasError) -> Any:
 
 class EnsembleExploreRequest(BaseModel):
     camera: PinholeCameraSpec = Field(default_factory=PinholeCameraSpec)
-    hypothesis: Literal["megalithic", "karst", "artifact"] = "megalithic"
+    hypothesis: Literal["megalithic", "karst", "artifact", "bedrock_null"] = "megalithic"
     instrument_rig: Literal["borescope_led", "drop_flare", "structured_laser"] = "drop_flare"
     seeds: List[int] = Field(default_factory=lambda: [7, 42, 108, 256])
     voxel_size: float = Field(default=0.25, ge=0.0, le=2.0)
-    sensor_noise_sigma_m: float = Field(default=0.18, ge=0.0, le=2.0)
+    sensor_noise_sigma_m: float = Field(
+        default=0.18, ge=0.0, le=2.0,
+        description="Posterior geometry spread (modeling choice; NOT demonstrated "
+                    "orbital-SAR precision — see claims khafre-2025-press).")
     structural_weight: float = Field(default=0.3, ge=0.0, le=1.0)
     posterior_resample: bool = True
     chain_batches: int = Field(default=2, ge=1, le=16)
@@ -260,6 +265,21 @@ def _get_bundle() -> EpistemicVolumeBundle:
     return CACHED_BUNDLE
 
 
+_VOLUME_CACHE: Dict[tuple, EpistemicVolumeBundle] = {}
+
+
+def _get_bundle_for(seed: int, chamber_size_m: float) -> EpistemicVolumeBundle:
+    """Parameter-cached volumes (seed × chamber size); bounded LRU of 2 because
+    each full-grid bundle holds ~50 MB+ of float32 fields."""
+    key = (int(seed), round(float(chamber_size_m), 2))
+    if key not in _VOLUME_CACHE:
+        while len(_VOLUME_CACHE) >= 2:
+            _VOLUME_CACHE.pop(next(iter(_VOLUME_CACHE)))
+        _VOLUME_CACHE[key] = VOLUME_ENGINE.synthesize_khafre_subterranean_complex(
+            seed=key[0], chamber_size_m=key[1])
+    return _VOLUME_CACHE[key]
+
+
 @app.get("/api/health")
 async def health_check() -> Dict[str, Any]:
     try:
@@ -277,16 +297,51 @@ async def health_check() -> Dict[str, Any]:
             "disk_free_gb": free_gb, "db_ok": db_ok}
 
 
+@app.get("/api/claims")
+async def claims(status: Optional[str] = None) -> Dict[str, Any]:
+    if status is not None and status not in VALID_STATUSES:
+        raise HTTPException(status_code=422, detail=f"Unknown status. Valid: {list(VALID_STATUSES)}")
+    return {"claims": list_claims(status)}
+
+
+@app.get("/api/claims/{claim_id}")
+async def claim_detail(claim_id: str) -> Dict[str, Any]:
+    rec = get_claim(claim_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Unknown claim.")
+    return rec
+
+
+@app.get("/api/khafre/reference-voids")
+async def reference_voids() -> Dict[str, Any]:
+    """Validated-void benchmarks (peer-reviewed muography) with cited dims."""
+    from .pipeline.khafre_sar_volume import REFERENCE_VOIDS, synthesize_reference_void
+
+    out = []
+    for kind, spec in REFERENCE_VOIDS.items():
+        bundle = synthesize_reference_void(kind)
+        void_frac = float(np.count_nonzero(bundle.sdf_volume < 0) / bundle.sdf_volume.size)
+        out.append({"kind": kind, "dims_m": list(spec["dims_m"]), "claim_id": spec["claim_id"],
+                    "grid_shape": list(spec["grid"]), "void_fraction": round(void_frac, 4),
+                    "sensor_uncertainty_m": spec["uncertainty_m"]})
+    return {"voids": out}
+
+
 @app.get("/api/khafre/trajectory")
 async def get_trajectory(num_cameras: int = 32, z_start_m: float = -30.0,
-                         z_end_m: float = -180.0, orbit_radius_m: float = 2.2) -> Dict[str, Any]:
-    bundle = _get_bundle()
+                         z_end_m: float = -180.0, orbit_radius_m: float = 2.2,
+                         seed: int = 42, chamber_size_m: float = 80.0) -> Dict[str, Any]:
+    if not 40.0 <= chamber_size_m <= 120.0:
+        raise HTTPException(status_code=422, detail="chamber_size_m must be in [40, 120] (cited outlet range is 80–90).")
+    bundle = _get_bundle_for(seed, chamber_size_m)
     shaft_center_xy = (-40.0, -20.0)
     return {"bounds_min_m": bundle.metadata.bounds_min_m,
             "bounds_max_m": bundle.metadata.bounds_max_m,
             "voxel_size_m": bundle.metadata.voxel_size_m,
             "shaft_center_xy": list(shaft_center_xy),
             "coordinate_frame": "z_up",
+            "claim_ids": KHAFRE_DATASET_CLAIM_IDS,
+            "volume": {"seed": seed, "chamber_size_m": bundle.metadata.chamber_size_m},
             "targetCameras": VOLUME_ENGINE.generate_helical_descent_cameras(
                 num_cameras=num_cameras, shaft_center_xy=shaft_center_xy,
                 z_start_m=z_start_m, z_end_m=z_end_m, orbit_radius_m=orbit_radius_m)}
@@ -667,6 +722,35 @@ async def render_depth(req: DepthRenderRequest) -> DepthRenderResponse:
         width=req.out_width, height=req.out_height, fx=fx, fy=fy, cx=cx, cy=cy,
         z_min=req.z_min, z_max=z_max,
         valid_fraction=round(float(np.count_nonzero(valid) / valid.size), 4))
+
+
+_GLB_CACHE: Dict[tuple, bytes] = {}
+
+
+@app.get("/api/khafre/mesh-glb")
+async def posterior_mesh_glb(posterior_seed: Optional[int] = None) -> Any:
+    """Shaft-column posterior mesh as GLB (cached per seed). The overlay the 3D
+    view renders beside the analytic prop: real posterior geometry, not paint."""
+    from fastapi.responses import Response
+
+    key = (posterior_seed if posterior_seed is not None else -1,)
+    if key not in _GLB_CACHE:
+        while len(_GLB_CACHE) >= 4:
+            _GLB_CACHE.pop(next(iter(_GLB_CACHE)))
+        import io
+
+        bundle = _get_bundle()
+        mesh = VOLUME_ENGINE.extract_posterior_cavity_mesh(
+            bundle, posterior_seed=posterior_seed,
+            roi_bounds_min_m=(-52.0, -32.0, -120.0),
+            roi_bounds_max_m=(-28.0, -8.0, -10.0))
+        buf = io.BytesIO()
+        mesh.export(buf, file_type="glb")
+        _GLB_CACHE[key] = buf.getvalue()
+    data = _GLB_CACHE[key]
+    return Response(content=data, media_type="model/gltf-binary",
+                    headers={"Content-Disposition": "attachment; filename=khafre_posterior.glb",
+                             "X-Mesh-SHA256": hashlib.sha256(data).hexdigest()[:16]})
 
 
 @app.post("/api/khafre/mesh")

@@ -10,7 +10,7 @@ export type RunMode = "mock" | "live";
 export interface EnsembleRequest {
   camera: { width?: number; height?: number; fov_deg?: number; coordinate_system?: "rub" | "rdf";
     pose: { position: [number, number, number]; quaternion: [number, number, number, number] } };
-  hypothesis?: "megalithic" | "karst" | "artifact";
+  hypothesis?: "megalithic" | "karst" | "artifact" | "bedrock_null";
   instrument_rig?: "borescope_led" | "drop_flare" | "structured_laser";
   seeds?: number[];
   voxel_size?: number;

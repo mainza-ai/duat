@@ -100,7 +100,7 @@ void main() {
 }
 `;
 
-type Hypothesis = "megalithic" | "karst" | "artifact";
+type Hypothesis = "megalithic" | "karst" | "artifact" | "bedrock_null";
 
 function useProceduralKhafreTextures(hypothesis: Hypothesis) {
   return useMemo(() => {
@@ -135,6 +135,12 @@ function useProceduralKhafreTextures(hypothesis: Hypothesis) {
           rgbData[idx] = Math.round((95 + spiral * 25) * falloff);
           rgbData[idx + 1] = Math.round((135 + spiral * 35) * falloff);
           rgbData[idx + 2] = Math.round((145 + spiral * 40) * falloff);
+        } else if (hypothesis === "bedrock_null") {
+          // Null prior: unbroken bedrock, no dressing, no falloff tricks — dark strata.
+          const strata = 0.5 + 0.5 * Math.sin(y * 0.08);
+          rgbData[idx] = Math.round((104 + strata * 14) * falloff);
+          rgbData[idx + 1] = Math.round((96 + strata * 12) * falloff);
+          rgbData[idx + 2] = Math.round((88 + strata * 10) * falloff);
         } else {
           const stepQuant = Math.floor(logDepthByte / 24) * 24;
           rgbData[idx] = Math.round(stepQuant * 0.4);
@@ -287,6 +293,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
   const [compare, setCompare] = useState<{ status: "idle" | "loading" | "error" | "done"; thumbs: { h: Hypothesis; uri: string }[] }>({ status: "idle", thumbs: [] });
   const [exporting, setExporting] = useState(false);
   const [sampleSrc, setSampleSrc] = useState<SampleSource | null>(null);
+  const [lastNBV, setLastNBV] = useState<{ target_z_m: number; predicted_variance_reduction_pct: number } | null>(null);
   const proc = useProceduralKhafreTextures(hypothesis);
 
   // Procedural fallback sampling: same arrays the shader renders.
@@ -331,6 +338,8 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
       if (m === "mock") {
         const res = await postEnsemble(apiBaseUrl, baseReq(hypothesis, "mock", [7, 42]));
         setLayers(layersFromResponse(res));
+        setLastNBV({ target_z_m: res.next_best_view.target_z_m,
+          predicted_variance_reduction_pct: res.next_best_view.predicted_variance_reduction_pct });
         await buildSampleSrc(res);
       } else {
         const seeds = m === "live-probe" ? [7] : [7, 42];
@@ -343,6 +352,8 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
           if (job.status === "done" && job.result) {
             const res = job.result as EnsembleResponse;
             setLayers(layersFromResponse(res));
+            setLastNBV({ target_z_m: res.next_best_view.target_z_m,
+              predicted_variance_reduction_pct: res.next_best_view.predicted_variance_reduction_pct });
             await buildSampleSrc(res);
             break;
           }
@@ -369,7 +380,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
     if (!pinned) return;
     setCompare({ status: "loading", thumbs: [] });
     try {
-      const hs: Hypothesis[] = ["megalithic", "karst", "artifact"];
+      const hs: Hypothesis[] = ["megalithic", "karst", "artifact", "bedrock_null"];
       const live = mode !== "mock";
       const results = await Promise.all(hs.map(async (h) => {
         const req = baseReq(h, live ? "live" : "mock", live ? [7] : [7, 42]);
@@ -550,14 +561,18 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
             <Sliders className="w-4 h-4 text-[#34D399]" /><span>Hypothesis Prior (Same Geometry)</span></div>
           <div className="flex flex-col gap-2 text-xs">
             {([
-              ["megalithic", "Megalithic Architecture", "Dressed limestone & granite spiral ramp, high-lumen drop flare"],
-              ["karst", "Phreatic Karst Dissolution", "Natural limestone sinkhole tube, wet travertine & water table"],
-              ["artifact", "SAR Side-Lobe Echo Test", "Visualizes stepped voxel quantization & acoustic ghosting"],
-            ] as [Hypothesis, string, string][]).map(([key, title, desc]) => (
+              ["megalithic", "Megalithic Architecture", "Dressed limestone & granite spiral ramp, high-lumen drop flare", "press claim · unverified"],
+              ["karst", "Phreatic Karst Dissolution", "Natural limestone sinkhole tube, wet travertine & water table", "geology · plausible"],
+              ["artifact", "SAR Side-Lobe Echo Test", "Visualizes stepped voxel quantization & acoustic ghosting", "method artifact"],
+              ["bedrock_null", "Unbroken Bedrock (Null)", "No void at all — Alvarez 1960s muon null result", "validated null"],
+            ] as [Hypothesis, string, string, string][]).map(([key, title, desc, chip]) => (
               <button key={key} onClick={() => setHypothesis(key)}
                 className={`p-3 rounded-lg border text-left transition ${hypothesis === key
                   ? "bg-slate-800/90 border-[#34D399] text-white" : "bg-[#090A0F] border-slate-800 text-slate-400 hover:border-slate-700"}`}>
-                <div className="font-semibold text-slate-100">{title}</div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="font-semibold text-slate-100">{title}</div>
+                  <div className="font-mono text-[9px] px-1.5 py-0.5 rounded border border-slate-700 text-slate-400 whitespace-nowrap">{chip}</div>
+                </div>
                 <div className="text-[11px] text-slate-400 mt-0.5">{desc}</div>
               </button>
             ))}
@@ -603,7 +618,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
             {compare.status === "loading" && <div className="text-slate-400 font-mono text-[11px]">Simulating 3 hypotheses…</div>}
             {compare.status === "error" && <div className="text-[#FF2D55] font-mono text-[11px]">Backend unreachable — start the API first.</div>}
             {compare.status === "done" && (
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-2">
                 {compare.thumbs.map(({ h, uri }) => (
                   <figure key={h}>
                     <img src={uri} alt={h} className="rounded border border-slate-700 w-full" />
@@ -618,8 +633,15 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string; active?: bool
           <div className="flex items-center gap-2 font-semibold text-[#34D399] mb-1">
             <Radar className="w-4 h-4" /><span>Next-Best-View Target Identified</span></div>
           <p className="text-slate-300 leading-relaxed text-[11px]">
-            Ensemble disagreement peaks at <span className="font-mono text-white">Z = -112.4m (Spiral Ledge #4)</span>.
-            A single physical borescope frame here resolves <span className="text-white font-semibold">68%</span> of structural variance.
+            Ensemble disagreement peaks at{" "}
+            <span className="font-mono text-white">
+              {lastNBV ? `Z = ${lastNBV.target_z_m}m (live ensemble)` : "Z = -112.4m (Spiral Ledge #4, offline placeholder)"}
+            </span>.
+            A single physical borescope frame here resolves{" "}
+            <span className="text-white font-semibold">
+              {lastNBV ? `${lastNBV.predicted_variance_reduction_pct}%` : "68% (offline placeholder)"}
+            </span>{" "}
+            of structural variance.
           </p>
         </div>
       </div>

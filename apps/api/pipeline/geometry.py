@@ -82,7 +82,12 @@ def mesh_to_bundle(
 
 
 def degrade_for_sweep(mesh: trimesh.Trimesh, levels: List[Tuple[str, float, float]]) -> List[Tuple[str, trimesh.Trimesh]]:
-    """Blur+quantize vertex positions: [(name, sigma_m, quant_m)] ladder LiDAR->GPR->muon."""
+    """Blur+quantize ladder LiDAR → SAR → GPR → muon.
+
+    Level sigmas are modeling choices anchored to validated sensing figures
+    (ScanPyramids: ~3 m voids resolvable with ~2 yr muon exposure; ERT/NFC work
+    at meter-to-centimeter scale), NOT to the contested orbital-SAR precision
+    claims (see claims khafre-2025-press physical_notes)."""
     out = []
     v = mesh.vertices.astype(np.float64)
     for name, sigma, qstep in levels:

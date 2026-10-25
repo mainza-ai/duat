@@ -25,6 +25,11 @@ HYPOTHESIS_PRIORS: Dict[str, str] = {
         "Stepped voxelized stone surfaces with geometric acoustic radar interference "
         "fringes and quantized depth facets, raw synthetic aperture tomography structure"
     ),
+    "bedrock_null": (
+        "Solid unbroken bedrock with no void whatsoever, dense natural limestone "
+        "strata with no carving, no chambers and no passages, exactly what the "
+        "1960s Alvarez muon survey measured: predicts empty depth returns"
+    ),
 }
 
 INSTRUMENT_RIGS: Dict[str, Tuple[str, float]] = {

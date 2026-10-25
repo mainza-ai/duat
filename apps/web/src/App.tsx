@@ -79,7 +79,13 @@ export function App() {
       <main className="flex-1 p-6 max-w-[1750px] w-full mx-auto flex flex-col">
         <div className="flex-1 flex-col gap-4" style={{ display: activeTab === "observatory" ? "flex" : "none" }}>
           <div className="flex items-center justify-between">
-            <div className="text-xs text-slate-400 font-mono">FLAGSHIP DATASET: <span className="text-white">Khafre Pyramid Subterranean SAR Anomalies (8 Shafts + Basal Chambers)</span></div>
+            <div className="text-xs text-slate-400 font-mono">FLAGSHIP DATASET: <span className="text-white">Khafre Pyramid Subterranean SAR Anomalies (8 Shafts + Basal Chambers)</span>{" "}
+              <a href="https://www.mdpi.com/2072-4292/18/16/2679" target="_blank" rel="noreferrer"
+                title="Press claim, never peer-reviewed; foundational 2022 paper retracted Aug 2026 for methodological flaws. Click for the retraction notice."
+                className="text-[#FFB800] border border-[#FFB800]/50 rounded px-1.5 py-0.5 hover:bg-[#FFB800]/10 transition">
+                UNVERIFIED CLAIM · foundation retracted 2026
+              </a>
+            </div>
             <div className="text-xs text-[#34D399] font-mono flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" /><span>Zero-Vividness-Bias Provenance Layer Active</span></div>
           </div>
           <ViewportErrorBoundary name="Epistemic Lens">

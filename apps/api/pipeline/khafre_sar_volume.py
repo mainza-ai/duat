@@ -24,6 +24,8 @@ import trimesh
 from scipy.ndimage import gaussian_filter
 from skimage.measure import marching_cubes
 
+from .shaft_model import ShaftParams, _helix_gap, ramp_proximity, shaft_void_sdf
+
 
 @dataclass
 class VolumeMetadata:
@@ -35,6 +37,9 @@ class VolumeMetadata:
     voxel_size_m: Tuple[float, float, float]
     iso_level: float = 0.0
     sensor_uncertainty_m: float = 0.35
+    # Cited outlet variance for the basal chambers (80 m per JPost/Ahram vs
+    # 90 m per NatGeo/TRT); None when the bundle did not come from the synth.
+    chamber_size_m: Optional[float] = None
 
 
 @dataclass
@@ -68,8 +73,10 @@ class KhafreSARVolumeEngine:
     def synthesize_khafre_subterranean_complex(
         self,
         shaft_radius_m: float = 5.5,
-        spiral_ledge_depth_m: float = 1.1,
         spiral_pitch_m: float = 28.0,
+        ramp_width_m: float = 2.0,
+        ramp_thickness_m: float = 0.8,
+        wall_relief_m: float = 0.0,
         chamber_size_m: float = 80.0,
         seed: int = 42,
     ) -> EpistemicVolumeBundle:
@@ -81,22 +88,23 @@ class KhafreSARVolumeEngine:
         X, Y, Z = np.meshgrid(x, y, z, indexing="ij")
 
         sdf = np.full(self.grid_shape, 100.0, dtype=np.float32)
+        ramp_fields = []
 
         shaft_x_coords = [-40.0, 40.0]
         shaft_y_coords = [-60.0, -20.0, 20.0, 60.0]
-        omega = (2.0 * np.pi) / spiral_pitch_m
+        params = ShaftParams(
+            radius_m=shaft_radius_m, spiral_pitch_m=spiral_pitch_m,
+            ramp_width_m=ramp_width_m, ramp_thickness_m=ramp_thickness_m,
+            wall_relief_m=wall_relief_m)
         for sx in shaft_x_coords:
             for sy in shaft_y_coords:
-                dx_s = X - sx
-                dy_s = Y - sy
-                r_xy = np.sqrt(dx_s**2 + dy_s**2)
-                theta = np.arctan2(dy_s, dx_s)
-                spiral_mod = spiral_ledge_depth_m * np.sin(omega * Z + 2.0 * theta)
-                effective_radius = shaft_radius_m + spiral_mod
-                shaft_sdf = r_xy - effective_radius
-                z_cap = np.maximum(-550.0 - Z, Z - (-15.0))
-                shaft_sdf = np.maximum(shaft_sdf, z_cap)
+                shaft_sdf = shaft_void_sdf(X, Y, Z, sx, sy, params)
                 sdf = np.minimum(sdf, shaft_sdf)
+                dx_s, dy_s = X - sx, Y - sy
+                r_xy = np.sqrt(dx_s ** 2 + dy_s ** 2)
+                theta = np.arctan2(dy_s, dx_s)
+                ramp_fields.append(ramp_proximity(
+                    r_xy, _helix_gap(Z, theta, params), params))
 
         chamber_centers = [(-40.0, 0.0, -565.0), (40.0, 0.0, -565.0)]
         half_xy = chamber_size_m / 2.0
@@ -121,12 +129,15 @@ class KhafreSARVolumeEngine:
 
         water_table_boost = np.exp(-((Z - (-585.0)) / 12.0) ** 2) * 0.45
         boundary_proximity = np.exp(-(sdf / 4.0) ** 2) * 0.40
+        ramp_dressing = (np.maximum.reduce(ramp_fields) * 0.25
+                         if ramp_fields else 0.0)
         stratigraphy_bands = 0.10 * (0.5 + 0.5 * np.sin(Z * 0.08))
         noise_field = gaussian_filter(
             rng.normal(0.0, 0.08, size=self.grid_shape).astype(np.float32), sigma=1.5
         )
         reflectivity = np.clip(
-            0.15 + boundary_proximity + water_table_boost + stratigraphy_bands + noise_field,
+            0.15 + boundary_proximity + water_table_boost + stratigraphy_bands
+            + ramp_dressing + noise_field,
             0.0, 1.0,
         ).astype(np.float32)
 
@@ -137,6 +148,7 @@ class KhafreSARVolumeEngine:
             voxel_size_m=self.voxel_size_m,
             iso_level=0.0,
             sensor_uncertainty_m=0.45,
+            chamber_size_m=chamber_size_m,
         )
         return EpistemicVolumeBundle(sdf_volume=sdf, reflectivity_volume=reflectivity, metadata=metadata)
 
@@ -256,6 +268,51 @@ class KhafreSARVolumeEngine:
                                "quaternion": quat, "coordinateSystem": coordinate_system},
             })
         return cameras
+
+
+def _box_sdf_field(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
+                   center: Tuple[float, float, float],
+                   size: Tuple[float, float, float]) -> np.ndarray:
+    qx = np.abs(X - center[0]) - size[0] / 2.0
+    qy = np.abs(Y - center[1]) - size[1] / 2.0
+    qz = np.abs(Z - center[2]) - size[2] / 2.0
+    return (np.minimum(np.maximum(qx, np.maximum(qy, qz)), 0.0)
+            + np.sqrt(np.maximum(qx, 0.0) ** 2 + np.maximum(qy, 0.0) ** 2
+                      + np.maximum(qz, 0.0) ** 2))
+
+
+# Validated-void benchmarks (peer-reviewed muography): the fidelity anchors
+# against which contested-claim renders are judged. Dimensions from the
+# Nature papers (see claims scanpyramids-2017 / scanpyramids-2023).
+REFERENCE_VOIDS: Dict[str, Dict[str, Any]] = {
+    "nfc": {"dims_m": (9.0, 2.0, 2.0), "claim_id": "scanpyramids-2023",
+            "bounds": ((-12.0, -12.0, -12.0), (12.0, 12.0, 12.0)),
+            "grid": (64, 64, 64), "uncertainty_m": 0.05},
+    "big-void": {"dims_m": (30.0, 6.0, 6.0), "claim_id": "scanpyramids-2017",
+                 "bounds": ((-20.0, -8.0, -8.0), (20.0, 8.0, 8.0)),
+                 "grid": (100, 40, 40), "uncertainty_m": 0.10},
+}
+
+
+def synthesize_reference_void(kind: str = "nfc") -> EpistemicVolumeBundle:
+    """Procedural bundle of a VALIDATED void (box approximation at cited dims)."""
+    if kind not in REFERENCE_VOIDS:
+        raise ValueError(f"Unknown reference void: {kind}")
+    spec = REFERENCE_VOIDS[kind]
+    lo, hi = spec["bounds"]
+    nx, ny, nz = spec["grid"]
+    x = np.linspace(lo[0], hi[0], nx, dtype=np.float32)
+    y = np.linspace(lo[1], hi[1], ny, dtype=np.float32)
+    z = np.linspace(lo[2], hi[2], nz, dtype=np.float32)
+    X, Y, Z = np.meshgrid(x, y, z, indexing="ij")
+    sdf = _box_sdf_field(X, Y, Z, (0.0, 0.0, 0.0), spec["dims_m"]).astype(np.float32)
+    reflectivity = np.clip(0.15 + 0.45 * np.exp(-(sdf / 1.5) ** 2), 0.0, 1.0).astype(np.float32)
+    metadata = VolumeMetadata(
+        grid_shape=spec["grid"], bounds_min_m=lo, bounds_max_m=hi,
+        voxel_size_m=((hi[0] - lo[0]) / (nx - 1), (hi[1] - lo[1]) / (ny - 1),
+                      (hi[2] - lo[2]) / (nz - 1)),
+        iso_level=0.0, sensor_uncertainty_m=spec["uncertainty_m"], chamber_size_m=None)
+    return EpistemicVolumeBundle(sdf_volume=sdf, reflectivity_volume=reflectivity, metadata=metadata)
 
 
 if __name__ == "__main__":  # pragma: no cover

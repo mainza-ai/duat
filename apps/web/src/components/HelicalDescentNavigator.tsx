@@ -6,7 +6,7 @@
 import React, { useMemo, useRef, useState, useEffect } from "react";
 import * as THREE from "three";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, Line, PerspectiveCamera } from "@react-three/drei";
+import { OrbitControls, Line, PerspectiveCamera, useGLTF } from "@react-three/drei";
 import { Compass, Video, Cpu, Play, Pause, Layers, Crosshair } from "lucide-react";
 import { renderDepth, decodeGrayscalePng, decodeLogDepthByte, createJob, getJob, cancelJob, fetchPricing, estimateCost } from "../lib/api";
 import type { JobRecord, PricingInfo } from "../lib/api";
@@ -45,31 +45,76 @@ function generateHelicalTrajectory(numCameras = 32): PosedCameraSpec[] {
 
 const KhafreShaftCutawayMesh: React.FC<{ showWireframe: boolean }> = ({ showWireframe }) => {
   const geometry = useMemo(() => {
+    // Plain cylinder prop (matches the shared shaft model: radius 5.5, no wall
+    // modulation — the spiral reads via the step instancing below, not paint).
     const geo = new THREE.CylinderGeometry(5.5, 5.5, 110, 64, 160, true);
     geo.translate(0, -110 / 2 - 5, 0);
     const pos = geo.attributes.position;
     const colors = new Float32Array(pos.count * 3);
     for (let i = 0; i < pos.count; i++) {
-      const vx = pos.getX(i), vy = pos.getY(i), vz = pos.getZ(i);
-      const angle = Math.atan2(vz, vx);
-      const spiralWave = Math.sin((vy / 22.0) * Math.PI * 2.0 + angle * 2.0);
-      const curR = Math.sqrt(vx * vx + vz * vz) || 1.0;
-      pos.setX(i, (vx / curR) * (5.5 + 0.85 * spiralWave));
-      pos.setZ(i, (vz / curR) * (5.5 + 0.85 * spiralWave));
-      const refl = 0.5 + 0.5 * spiralWave;
-      colors[i * 3] = 0.05 + refl * 0.85; colors[i * 3 + 1] = 0.45 + refl * 0.25; colors[i * 3 + 2] = 0.85 - refl * 0.65;
+      const vy = pos.getY(i);
+      // Subtle vertical stratigraphy bands (Tier-2 flavor, no fake spiral).
+      const band = 0.5 + 0.5 * Math.sin(vy * 0.08);
+      colors[i * 3] = 0.10 + band * 0.35;
+      colors[i * 3 + 1] = 0.42 + band * 0.18;
+      colors[i * 3 + 2] = 0.72 - band * 0.25;
     }
     geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
     geo.computeVertexNormals();
     return geo;
   }, []);
+
+  // Instanced spiral-ramp steps matching the backend helix (pitch 28 m, width
+  // 2 m at r≈4.5, y −15…−103): the descending pathway as real geometry.
+  const stepsRef = useRef<THREE.InstancedMesh>(null);
+  const stepCount = 48;
+  useEffect(() => {
+    const mesh = stepsRef.current;
+    if (!mesh) return;
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < stepCount; i++) {
+      const y = -15 - (i / (stepCount - 1)) * 88;
+      const theta = ((((y + 15) % 28) + 28) % 28 / 28) * Math.PI * 2;
+      dummy.position.set(4.5 * Math.cos(theta), y, -4.5 * Math.sin(theta));
+      dummy.lookAt(0, y, 0);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  }, []);
+
   return (
     <group>
+      {/* Translucent Inward-Facing Cavity Boundary */}
       <mesh geometry={geometry}>
-        <meshStandardMaterial vertexColors side={THREE.DoubleSide} transparent opacity={0.16} roughness={0.8} />
+        <meshStandardMaterial
+          vertexColors
+          side={THREE.DoubleSide}
+          transparent
+          opacity={0.16}
+          roughness={0.8}
+          polygonOffset
+          polygonOffsetFactor={1}
+          polygonOffsetUnits={1}
+        />
       </mesh>
+
+      {/* Helical ramp steps (instanced rock shelves) */}
+      <instancedMesh ref={stepsRef} args={[undefined, undefined, stepCount]}>
+        <boxGeometry args={[2.2, 0.35, 2.0]} />
+        <meshStandardMaterial color="#8a7a5f" roughness={0.9} />
+      </instancedMesh>
+
+      {/* Radar-Cyan Structural Tomography Wireframe */}
       {showWireframe && (
-        <mesh geometry={geometry}><meshBasicMaterial color="#00F0FF" wireframe transparent opacity={0.12} /></mesh>
+        <mesh geometry={geometry}>
+          <meshBasicMaterial
+            color="#00F0FF"
+            wireframe
+            transparent
+            opacity={0.12}
+          />
+        </mesh>
       )}
     </group>
   );
@@ -114,8 +159,9 @@ const BackProjectedPointCloud: React.FC<{
   apiBaseUrl?: string;
   colorMode: PointCloudColorMode;
   pointSize: number;
+  maxDisplayZ: number;
   onSource: (s: "live" | "pending" | "error") => void;
-}> = ({ sceneCam, depthReq, apiBaseUrl, colorMode, pointSize, onSource }) => {
+}> = ({ sceneCam, depthReq, apiBaseUrl, colorMode, pointSize, maxDisplayZ, onSource }) => {
   const [payload, setPayload] = useState<DepthPayload | null>(null);
   const reqKey = depthReq ? JSON.stringify(depthReq) : "none";
 
@@ -158,6 +204,7 @@ const BackProjectedPointCloud: React.FC<{
         const i = y * width + x;
         if (depth[i * 4] === 0) continue; // strict 0-mask: no surface, no point
         const z = zGrid[i];
+        if (z > maxDisplayZ) continue; // display-range cap tames grazing far spray
         v.set(((x - cx) / fx) * z, -((y - cy) / fy) * z, -z).applyQuaternion(camQuat).add(camPos);
         positions.push(v.x, v.y, v.z);
         const rByte = refl[i * 4] / 255;
@@ -183,7 +230,7 @@ const BackProjectedPointCloud: React.FC<{
     geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
     geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
     return geo;
-  }, [payload, colorMode, sceneCam]);
+  }, [payload, colorMode, maxDisplayZ, sceneCam]);
 
   return (<points geometry={pointsGeometry}><pointsMaterial size={pointSize} vertexColors sizeAttenuation transparent opacity={0.92} /></points>);
 };
@@ -217,6 +264,17 @@ const CameraRigSync: React.FC<{
   return null;
 };
 
+/** Real posterior-geometry overlay (marching-cubes mesh from the backend SDF,
+ *  Z-up Khafre frame mapped into the Y-up scene: R_x(-90°) then recenter. */
+const PosteriorMeshOverlay: React.FC<{ apiBaseUrl?: string; seed: number }> = ({ apiBaseUrl, seed }) => {
+  const gltf = useGLTF(`${apiBaseUrl ?? ""}/api/khafre/mesh-glb?posterior_seed=${seed}`, true);
+  return (
+    <group rotation={[-Math.PI / 2, 0, 0]} position={[40, 0, -20]}>
+      <primitive object={gltf.scene} />
+    </group>
+  );
+};
+
 export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: boolean }> = ({ apiBaseUrl, active }) => {
   const [cameras, setCameras] = useState<PosedCameraSpec[]>(() => generateHelicalTrajectory(32));
   const [trajSource, setTrajSource] = useState<"procedural" | "backend">("procedural");
@@ -226,15 +284,17 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
   const [showShaftWireframe, setShowShaftWireframe] = useState(true);
   const [colorMode, setColorMode] = useState<PointCloudColorMode>("relief");
   const [pointSize, setPointSize] = useState(0.18);
+  const [maxDisplayZ, setMaxDisplayZ] = useState(40);
   const [backendCams, setBackendCams] = useState<any[] | null>(null);
   const [depthSrc, setDepthSrc] = useState<"live" | "pending" | "error">("pending");
   const [flyTo, setFlyTo] = useState<FlyTarget | null>(null);
   const [lookAt, setLookAt] = useState<[number, number, number]>([0, -60, 0]);
-  const [chainHyp, setChainHyp] = useState<"megalithic" | "karst" | "artifact">("megalithic");
-  const [chainBatches, setChainBatches] = useState(3);
+  const [chainHyp, setChainHyp] = useState<"megalithic" | "karst" | "artifact" | "bedrock_null">("megalithic");  const [chainBatches, setChainBatches] = useState(3);
   const [chainJob, setChainJob] = useState<{ id: string; progress: number; status: string; batches?: number } | null>(null);
   const [armingChain, setArmingChain] = useState(false);
   const [pricing, setPricing] = useState<PricingInfo | null>(null);
+  const [showPosteriorMesh, setShowPosteriorMesh] = useState(false);
+  const [posteriorSeed, setPosteriorSeed] = useState(101);
 
   React.useEffect(() => {
     if (!apiBaseUrl) return;
@@ -354,7 +414,7 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
         </div>
         <div className="relative flex-1 w-full h-full">
           <Canvas frameloop={active === false ? "never" : "always"}>
-            <PerspectiveCamera makeDefault fov={55} position={[55, -60, 62]} near={0.1} far={800} />
+            <PerspectiveCamera makeDefault fov={55} position={[55, -60, 62]} near={1} far={400} />
             {!firstPersonMode && (
               <OrbitControls makeDefault target={lookAt} enableDamping dampingFactor={0.08}
                 onStart={() => setFlyTo(null)} />
@@ -363,11 +423,18 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
               flyTo={flyTo} onArrive={() => setFlyTo(null)} />
             <ambientLight intensity={0.65} />
             <pointLight position={[0, activeCam.position[1], 0]} intensity={2.2} distance={45} />
-            <KhafreShaftCutawayMesh showWireframe={showShaftWireframe} />
+            {/* 1. Shaft geometry: analytic prop or real posterior-mesh overlay */}
+            {showPosteriorMesh ? (
+              <React.Suspense fallback={null}>
+                <PosteriorMeshOverlay apiBaseUrl={apiBaseUrl} seed={posteriorSeed} />
+              </React.Suspense>
+            ) : (
+              <KhafreShaftCutawayMesh showWireframe={showShaftWireframe} />
+            )}
             <Line points={splinePoints} color="#00F0FF" lineWidth={1.5} transparent opacity={0.45} />
             {cameras.map((cam) => (<CameraFrustumNode key={cam.index} cam={cam} isSelected={cam.index === selectedIdx} onSelect={(i) => selectCam(i, false)} />))}
             <BackProjectedPointCloud sceneCam={activeCam} depthReq={depthReq} apiBaseUrl={apiBaseUrl}
-              colorMode={colorMode} pointSize={pointSize} onSource={setDepthSrc} />
+              colorMode={colorMode} pointSize={pointSize} maxDisplayZ={maxDisplayZ} onSource={setDepthSrc} />
           </Canvas>
         </div>
         <div className="z-10 flex flex-wrap items-center gap-4 px-4 py-3 bg-[#090A0F]/95 border-t border-slate-800 text-xs">
@@ -414,10 +481,29 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
               <span className="font-mono text-[#00F0FF]">{pointSize.toFixed(2)}m</span></div>
               <input type="range" min="0.06" max="0.40" step="0.02" value={pointSize}
                 onChange={(e) => setPointSize(parseFloat(e.target.value))} className="w-full accent-[#00F0FF]" /></div>
+            <div><div className="flex justify-between mb-1"><span className="text-slate-400">Max display range</span>
+              <span className="font-mono text-[#00F0FF]">{maxDisplayZ.toFixed(0)}m</span></div>
+              <input type="range" min="8" max="40" step="1" value={maxDisplayZ}
+                onChange={(e) => setMaxDisplayZ(parseFloat(e.target.value))} className="w-full accent-[#00F0FF]" /></div>
             <label className="flex items-center justify-between cursor-pointer pt-2 border-t border-slate-800">
               <span className="text-slate-300">Show SAR Shaft Wireframe</span>
               <input type="checkbox" checked={showShaftWireframe} onChange={(e) => setShowShaftWireframe(e.target.checked)} className="accent-[#00F0FF]" />
             </label>
+            <label className="flex items-center justify-between cursor-pointer pt-2 border-t border-slate-800">
+              <span className="text-slate-300">Posterior mesh overlay</span>
+              <input type="checkbox" checked={showPosteriorMesh} onChange={(e) => setShowPosteriorMesh(e.target.checked)} className="accent-[#34D399]" />
+            </label>
+            {showPosteriorMesh && (
+              <div className="flex items-center justify-between pt-1">
+                <span className="text-slate-400 text-xs">Posterior seed</span>
+                <div className="flex gap-1">
+                  {[101, 202, 303].map((s) => (
+                    <button key={s} onClick={() => setPosteriorSeed(s)}
+                      className={`px-2 py-0.5 rounded border font-mono text-[10px] ${posteriorSeed === s ? "bg-slate-800 border-[#34D399] text-white" : "border-slate-800 text-slate-400"}`}>{s}</button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
         <div>
@@ -440,11 +526,11 @@ export const HelicalDescentNavigator: React.FC<{ apiBaseUrl?: string; active?: b
             the next batch. Runs {chainBatches} batches × 2 targets as a resumable, cancellable job.
           </p>
           <div className="flex items-center gap-2 mb-2">
-            {(["megalithic", "karst", "artifact"] as const).map((h) => (
+            {(["megalithic", "karst", "artifact", "bedrock_null"] as const).map((h) => (
               <button key={h} onClick={() => setChainHyp(h)}
                 className={`px-2 py-1 rounded border font-mono text-[10px] transition ${chainHyp === h
                   ? "bg-slate-800 border-[#34D399] text-white" : "bg-[#090A0F] border-slate-800 text-slate-400"}`}>
-                {h.slice(0, 4)}</button>
+                {h === "bedrock_null" ? "null" : h.slice(0, 4)}</button>
             ))}
             <span className="font-mono text-[10px] text-slate-400 ml-auto">batches</span>
             <input type="range" min={1} max={6} step={1} value={chainBatches}
