@@ -1,3 +1,11 @@
+## [2026-10-25] repo | Initialized git + pushed to mainza-ai/duat
+
+- `git init -b main`, root commit `27b68bd` (42 files: backend, frontend,
+  wiki, blueprint, orchestration). Remote `origin` via SSH (HTTPS helper
+  broken locally); `git push -u origin main` succeeded.
+- Excluded from history: `dev-docs/`, `.env` (+secrets), `.DS_Store`,
+  caches. Grep-verified no live key material outside `.env`.
+
 ## [2026-10-25] verify | Backend suite green + lifespan migration
 
 - `pytest apps/api/tests -q`: **8 passed** (depth math, inverted codec
