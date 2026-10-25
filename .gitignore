@@ -1,0 +1,11 @@
+dev-docs/
+.env
+.env.*
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+dist/
+data/*.exr
+data/*.png
+.DS_Store
