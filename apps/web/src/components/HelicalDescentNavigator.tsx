@@ -168,7 +168,7 @@ export const HelicalDescentNavigator: React.FC = () => {
       <div className="relative flex-1 min-h-[520px] bg-[#050609] flex flex-col justify-between">
         <div className="z-10 flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-[#090A0F]/90 backdrop-blur-md border-b border-slate-800 text-xs">
           <div className="flex items-center gap-2"><Compass className="w-4 h-4 text-[#00F0FF]" />
-            <span className="font-semibold tracking-wider uppercase">DUAT // 3D HELICAL DESCENT & RGBD POINT-CLOUD BACK-PROJECTION</span></div>
+            <span className="font-semibold tracking-wider uppercase">MILIMO DUAT // 3D HELICAL DESCENT & RGBD POINT-CLOUD BACK-PROJECTION</span></div>
           <div className="flex items-center gap-3 font-mono text-[11px] text-slate-400">
             <span>SHAFT #2 (WEST ROW)</span>
             <span className="text-[#00F0FF]">POSE #{activeCam.index + 1}/32 (DEPTH: {activeCam.position[1]}m)</span></div>

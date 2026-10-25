@@ -246,7 +246,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string }> = ({ apiBas
         <div className="z-10 flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-[#090A0F]/90 backdrop-blur-md border-b border-slate-800 text-xs">
           <div className="flex items-center gap-2">
             <ShieldAlert className="w-4 h-4 text-[#FFB800]" />
-            <span className="font-semibold tracking-wider uppercase text-slate-200">DUAT // MODEL PREDICTION — CONDITIONED ON KHAFRE SAR GEOMETRY</span>
+            <span className="font-semibold tracking-wider uppercase text-slate-200">MILIMO DUAT // MODEL PREDICTION — CONDITIONED ON KHAFRE SAR GEOMETRY</span>
           </div>
           <div className="flex items-center gap-4 font-mono text-[11px] text-slate-400">
             <span>TASK: atlasChisel</span><span>VOXEL_GAUGE: 0.25m</span>

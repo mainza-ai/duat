@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="DUAT // Subterranean Epistemic World-Model API", version="1.0.0",
+app = FastAPI(title="MILIMO DUAT // Subterranean Epistemic World-Model API", version="1.0.0",
               description="Conditions World Labs atlasChisel on SAR/Muon/GPR geometry with provenance.",
               lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
@@ -137,7 +137,7 @@ def _get_bundle() -> EpistemicVolumeBundle:
 
 @app.get("/api/health")
 async def health_check() -> Dict[str, Any]:
-    return {"status": "online", "project": "Duat",
+    return {"status": "online", "project": "Milimo Duat",
             "worldlabs_mock_mode": ATLAS_CLIENT.mock_mode,
             "khafre_volume_loaded": CACHED_BUNDLE is not None}
 

@@ -27,12 +27,10 @@ export function App() {
     <div className="min-h-screen bg-[#050609] text-slate-100 flex flex-col font-sans selection:bg-[#00F0FF] selection:text-black">
       <header className="sticky top-0 z-50 flex flex-wrap items-center justify-between gap-4 px-6 py-3.5 bg-[#090A0F]/95 backdrop-blur-md border-b border-slate-800">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#00F0FF] via-[#FFB800] to-[#BD00FF] flex items-center justify-center shadow-lg shadow-cyan-500/20">
-            <Compass className="w-5 h-5 text-slate-950" />
-          </div>
+          <img src="/milimo_logo.png" alt="Milimo Duat" className="w-8 h-8 rounded-lg shadow-lg shadow-cyan-500/20" />
           <div>
             <h1 className="text-base font-bold tracking-wider uppercase bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
-              DUAT // Subterranean Epistemic Observatory</h1>
+              MILIMO DUAT // Subterranean Epistemic Observatory</h1>
             <p className="text-[11px] text-slate-400 font-mono">World Labs atlasChisel World-Model & Sensor Ingestion Engine</p>
           </div>
         </div>
@@ -77,7 +75,7 @@ export function App() {
         )}
       </main>
       <footer className="px-6 py-3 bg-[#090A0F] border-t border-slate-800 text-center text-xs text-slate-500 font-mono">
-        Project Duat // Built for open-ended wonder, epistemic rigor, and World Labs Marble 2 / Atlas.
+        Project Milimo Duat // Built for open-ended wonder, epistemic rigor, and World Labs Marble 2 / Atlas.
       </footer>
     </div>
   );
