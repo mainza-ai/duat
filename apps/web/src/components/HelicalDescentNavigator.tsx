@@ -72,7 +72,7 @@ const KhafreShaftCutawayMesh: React.FC<{ showWireframe: boolean }> = ({ showWire
 };
 
 const CameraFrustumNode: React.FC<{ cam: PosedCameraSpec; isSelected: boolean; onSelect: (i: number) => void }> = ({ cam, isSelected, onSelect }) => {
-  const color = cam.isNextBestView ? "#BD00FF" : isSelected ? "#00F0FF" : "#475569";
+  const color = cam.isNextBestView ? "#FF2D55" : isSelected ? "#00F0FF" : "#475569";
   const frustumPoints = useMemo(() => {
     const scale = isSelected ? 1.4 : 0.75, w = 0.8 * scale, h = 0.45 * scale, z = -1.2 * scale;
     const o = new THREE.Vector3(0, 0, 0);
@@ -88,7 +88,7 @@ const CameraFrustumNode: React.FC<{ cam: PosedCameraSpec; isSelected: boolean; o
       {(isSelected || cam.isNextBestView) && (
         <Html distanceFactor={28} position={[0, 0.6, 0]}>
           <div className={`px-2 py-0.5 rounded text-[10px] font-mono whitespace-nowrap border shadow-lg pointer-events-none ${
-            cam.isNextBestView ? "bg-[#BD00FF]/90 border-purple-300 text-white" : "bg-[#090A0F]/90 border-[#00F0FF] text-[#00F0FF]"}`}>
+            cam.isNextBestView ? "bg-[#FF2D55]/90 border-red-300 text-white" : "bg-[#090A0F]/90 border-[#00F0FF] text-[#00F0FF]"}`}>
             {cam.isNextBestView ? `NBV TARGET #${cam.index + 1} (SPLIT ${Math.round(cam.disagreementScore * 100)}%)`
               : `CAM #${cam.index + 1} (Z=${cam.position[1]}m)`}
           </div>
@@ -197,7 +197,7 @@ export const HelicalDescentNavigator: React.FC = () => {
               onChange={(e) => { setIsPlaying(false); setSelectedIdx(parseInt(e.target.value, 10)); }} className="w-full accent-[#00F0FF]" />
             <span className="font-mono text-[#00F0FF] whitespace-nowrap">Z = {activeCam.position[1]}m</span></div>
           <button onClick={() => { setIsPlaying(false); setSelectedIdx(18); }}
-            className="px-2.5 py-1.5 rounded border border-[#BD00FF] bg-[#BD00FF]/15 text-[#BD00FF] font-mono text-[11px] hover:bg-[#BD00FF]/25 transition">Jump to NBV (#19)</button>
+            className="px-2.5 py-1.5 rounded border border-[#FF2D55] bg-[#FF2D55]/15 text-[#FF2D55] font-mono text-[11px] hover:bg-[#FF2D55]/25 transition">Jump to NBV (#19)</button>
         </div>
       </div>
       <div className="w-full lg:w-96 bg-[#0D0F17] border-l border-slate-800 p-5 flex flex-col gap-6">
@@ -244,7 +244,7 @@ export const HelicalDescentNavigator: React.FC = () => {
             <div className="flex justify-between"><span className="text-slate-500">FOCAL (fx, fy):</span><span>({activeCam.fx}, {activeCam.fy}) px</span></div>
             <div className="flex justify-between"><span className="text-slate-500">POSITION (m):</span><span className="text-[#00F0FF]">[{activeCam.position.join(", ")}]</span></div>
             <div className="flex justify-between"><span className="text-slate-500">QUATERNION:</span><span>[{activeCam.quaternion.map((q) => q.toFixed(2)).join(", ")}]</span></div>
-            <div className="flex justify-between pt-1.5 border-t border-slate-800"><span className="text-[#BD00FF]">ENSEMBLE DISAGREEMENT:</span>
+            <div className="flex justify-between pt-1.5 border-t border-slate-800"><span className="text-[#FF2D55]">ENSEMBLE DISAGREEMENT:</span>
               <span className="text-white font-semibold">{Math.round(activeCam.disagreementScore * 100)}%</span></div>
           </div>
         </div>

@@ -11,7 +11,7 @@ into **navigable, photorealistic, provenance-tracked 3D interiors** via
 World Labs Marble 2 / Atlas `atlasChisel`.
 
 [![Status](https://img.shields.io/badge/status-beta-00F0FF?style=flat-square)](docs/BLUEPRINT.md)
-[![Atlas](https://img.shields.io/badge/Atlas-atlasChisel-BD00FF?style=flat-square)](https://atlas-beta.worldlabs.ai/docs/depth-guided-generation)
+[![Atlas](https://img.shields.io/badge/Atlas-atlasChisel-FF2D55?style=flat-square)](https://atlas-beta.worldlabs.ai/docs/depth-guided-generation)
 [![Tests](https://img.shields.io/badge/tests-8_passing-00c853?style=flat-square)](apps/api/tests)
 [![Stack](https://img.shields.io/badge/stack-React_19_%2B_R3F_%2B_FastAPI-FFB800?style=flat-square)](docs/BLUEPRINT.md)
 
@@ -21,7 +21,7 @@ World Labs Marble 2 / Atlas `atlasChisel`.
 |:-----|:--------|:------|
 | **1 · Measured** | Sensor boundary mesh, error bars, planar-depth maps | 🟦 `#00F0FF` |
 | **2 · Inferred** | Dielectric / density / moisture proxies | 🟧 `#FFB800` |
-| **3 · Imagined** | `atlasChisel` render + ensemble consensus & disagreement | 🟪 `#BD00FF` |
+| **3 · Imagined** | `atlasChisel` render + ensemble consensus & disagreement | 🟥 `#FF2D55` |
 
 > `MODEL PREDICTION — CONDITIONED ON SENSOR GEOMETRY`
 
@@ -51,7 +51,7 @@ borescope targeting).
 ## 🧭 Two viewports
 
 - **Epistemic Lens** — 2D shader scrubber blending Measured / Inferred /
-  Imagined with quantum-shimmer disagreement overlay, X-ray loupe, and
+  Imagined with variance-shimmer disagreement overlay, X-ray loupe, and
   hypothesis mixer (*Megalithic × Karst × Radar-artifact* on identical geometry).
 - **Helical Descent** — 3D R3F observatory: shaft cutaway, 32 camera frustums,
   live RGBD point-cloud back-projection, borescope POV fly-through, chained-descent anchors.

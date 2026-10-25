@@ -9,7 +9,7 @@ import { HelicalDescentNavigator } from "./components/HelicalDescentNavigator";
 export function App() {
   const [activeTab, setActiveTab] = useState<"observatory" | "helical">("observatory");
   const [apiStatus, setApiStatus] = useState<"checking" | "online" | "offline">("checking");
-  const [apiBaseUrl] = useState<string>("http://localhost:8000");
+  const [apiBaseUrl] = useState<string>("http://127.0.0.1:8001"); // TEMP local-test: :8000 occupied
 
   useEffect(() => {
     const checkApi = async () => {
@@ -60,7 +60,7 @@ export function App() {
           <div className="flex-1 flex flex-col gap-4">
             <div className="flex items-center justify-between">
               <div className="text-xs text-slate-400 font-mono">FLAGSHIP DATASET: <span className="text-white">Khafre Pyramid Subterranean SAR Anomalies (8 Shafts + Basal Chambers)</span></div>
-              <div className="text-xs text-[#BD00FF] font-mono flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" /><span>Zero-Vividness-Bias Provenance Layer Active</span></div>
+              <div className="text-xs text-[#FF2D55] font-mono flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" /><span>Zero-Vividness-Bias Provenance Layer Active</span></div>
             </div>
             <EpistemicLensViewport apiBaseUrl={apiBaseUrl} />
           </div>

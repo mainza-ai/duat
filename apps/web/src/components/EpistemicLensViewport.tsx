@@ -37,7 +37,7 @@ uniform float uTime;
 const vec3 COLOR_OBSIDIAN = vec3(0.035, 0.039, 0.059);
 const vec3 COLOR_MEASURED = vec3(0.0, 0.941, 1.0);
 const vec3 COLOR_INFERRED = vec3(1.0, 0.722, 0.0);
-const vec3 COLOR_SHIMMER  = vec3(0.741, 0.0, 1.0);
+const vec3 COLOR_SHIMMER  = vec3(1.0, 0.176, 0.333);
 
 // OFFICIAL Atlas inverted log-depth: 255 = zMin (near), 0 = empty.
 float decodePlanarDepth(float rawSample, out bool isEmpty) {
@@ -266,7 +266,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string }> = ({ apiBas
           <div><span className="text-[#00F0FF]">MEASURED Z: </span>
             <span className="text-white">{telemetry.planarZ === 0 ? "0.0m (EMPTY VOID)" : `${telemetry.planarZ}m`}</span></div>
           <div><span className="text-[#FFB800]">DIELECTRIC: </span><span className="text-white">{telemetry.reflectivity}</span></div>
-          <div><span className="text-[#BD00FF]">ENSEMBLE SPLIT: </span><span className="text-white">{Math.round(telemetry.disagreement * 100)}%</span></div>
+          <div><span className="text-[#FF2D55]">ENSEMBLE SPLIT: </span><span className="text-white">{Math.round(telemetry.disagreement * 100)}%</span></div>
         </div>
       </div>
       <div className="w-full lg:w-96 bg-[#0D0F17] border-l border-slate-800 p-5 flex flex-col gap-6">
@@ -289,10 +289,10 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string }> = ({ apiBas
             ))}
             <div className="pt-2 border-t border-slate-800">
               <div className="flex justify-between text-xs mb-1">
-                <span className="text-[#BD00FF] font-medium flex items-center gap-1"><Sparkles className="w-3.5 h-3.5" /> Quantum Shimmer (Variance)</span>
+                <span className="text-[#FF2D55] font-medium flex items-center gap-1"><Sparkles className="w-3.5 h-3.5" /> Variance Shimmer</span>
                 <span className="font-mono">{Math.round(shimmerIntensity * 100)}%</span></div>
               <input type="range" min="0" max="1" step="0.01" value={shimmerIntensity}
-                onChange={(e) => setShimmerIntensity(parseFloat(e.target.value))} className="w-full accent-[#BD00FF]" />
+                onChange={(e) => setShimmerIntensity(parseFloat(e.target.value))} className="w-full accent-[#FF2D55]" />
             </div>
             <label className="flex items-center justify-between text-xs pt-2 border-t border-slate-800 cursor-pointer">
               <span className="text-slate-300">Live backend layers (mock)</span>
@@ -315,7 +315,7 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string }> = ({ apiBas
         </div>
         <div>
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
-            <Sliders className="w-4 h-4 text-[#BD00FF]" /><span>Hypothesis Prior (Same Geometry)</span></div>
+            <Sliders className="w-4 h-4 text-[#FF2D55]" /><span>Hypothesis Prior (Same Geometry)</span></div>
           <div className="flex flex-col gap-2 text-xs">
             {([
               ["megalithic", "Megalithic Architecture", "Dressed limestone & granite spiral ramp, high-lumen drop flare"],
@@ -324,15 +324,15 @@ export const EpistemicLensViewport: React.FC<{ apiBaseUrl: string }> = ({ apiBas
             ] as [Hypothesis, string, string][]).map(([key, title, desc]) => (
               <button key={key} onClick={() => setHypothesis(key)}
                 className={`p-3 rounded-lg border text-left transition ${hypothesis === key
-                  ? "bg-slate-800/90 border-[#BD00FF] text-white" : "bg-[#090A0F] border-slate-800 text-slate-400 hover:border-slate-700"}`}>
+                  ? "bg-slate-800/90 border-[#FF2D55] text-white" : "bg-[#090A0F] border-slate-800 text-slate-400 hover:border-slate-700"}`}>
                 <div className="font-semibold text-slate-100">{title}</div>
                 <div className="text-[11px] text-slate-400 mt-0.5">{desc}</div>
               </button>
             ))}
           </div>
         </div>
-        <div className="mt-auto p-3.5 rounded-lg bg-[#BD00FF]/10 border border-[#BD00FF]/40 text-xs">
-          <div className="flex items-center gap-2 font-semibold text-[#BD00FF] mb-1">
+        <div className="mt-auto p-3.5 rounded-lg bg-[#FF2D55]/10 border border-[#FF2D55]/40 text-xs">
+          <div className="flex items-center gap-2 font-semibold text-[#FF2D55] mb-1">
             <Radar className="w-4 h-4" /><span>Next-Best-View Target Identified</span></div>
           <p className="text-slate-300 leading-relaxed text-[11px]">
             Ensemble disagreement peaks at <span className="font-mono text-white">Z = -112.4m (Spiral Ledge #4)</span>.
